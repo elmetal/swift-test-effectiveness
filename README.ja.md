@@ -6,7 +6,13 @@ Swift プロジェクトのテストスイートの effectiveness（故障を検
 
 結果は 1 つのスコアではなく宣言単位で示します。宣言ごとに、テストの何が欠けているか（実行されていない、実行されているが検証されていない、など）と、何をすべきかを報告します。
 
-現在は、どのテストも実行しないメソッドをカバレッジで、実行されているが検証されていないメソッドを極端ミューテーションで見つけます。極端ミューテーションでは、各メソッドの本体を戻り値型にとって最も単純な振る舞い（空の本体、`nil`、`true`/`false` …）に置き換え、それでもテストが全て通るものを **pseudo-tested** と報告します。
+現在は、メソッドごとに次の 3 つを報告します。
+
+- どのテストがそのメソッドを直接参照しているか。コンパイラのインデックスから調べます。
+- どのテストも実行しないメソッド。カバレッジで見つけます。
+- 実行されているが検証されていないメソッド。極端ミューテーションで見つけます。
+
+極端ミューテーションでは、各メソッドの本体を戻り値型にとって最も単純な振る舞い（空の本体、`nil`、`true`/`false` …）に置き換え、それでもテストが全て通るものを **pseudo-tested** と報告します。
 
 ```
 Pseudo-tested (2)
@@ -42,6 +48,13 @@ Partially tested (2)
 | `tested` | 見つからなかった | — | なし |
 | *Not analyzed* | 解析できない（理由を表示） | — | — |
 
+各メソッドには [referenced](docs/ja/methods/static-references.md) 列も付きます。テストがそのメソッドを直接参照しているかどうかを示す列です。対処が変わる場合は、レポートに注記を付けます。
+
+- `pseudo-tested` で、どのテストも直接呼んでいないメソッド：どこか別の場所にアサーションを足すのではなく、そのメソッド自身のテストが必要です。
+- `not-covered` だが、テストからは参照されているメソッド：スキップされたテスト、モックの注入、別の型へのディスパッチのどれかを示しています。
+
+モックを注入したテストは、本物の実装を参照したことになりません。protocol 経由の呼び出しは、同じテスト（または XCTestCase や suite）が名前を出している具体型の実装にだけ数えます。
+
 ## 使い方
 
 ### Swift Package
@@ -70,6 +83,8 @@ swift run swift-test-effectiveness /path/to/package
 
 | オプション | 手法 | 説明 |
 |---|---|---|
+| `--no-index` | 静的参照 | コンパイラのインデックスを書き出さず、読まない。referenced 列は unknown になる |
+| `--index-store-path <path>` | 静的参照 | 読み込むインデックスストア（パッケージではビルドが書き出すものが既定。カスタムモードでは必須） |
 | `--no-coverage` | カバレッジ | カバレッジを取得せず、後段の手法を全宣言に対して実行する |
 | `--throw-mutants` | 極端ミューテーション | 型指定なしの `throws` メソッドに `throw` するミュータントを追加 |
 | `--timeout-factor`, `--minimum-timeout` | 極端ミューテーション | ミュータントごとのテスト実行のタイムアウト（ベースライン時間 × 係数、下限秒数） |
@@ -89,7 +104,7 @@ swift run swift-test-effectiveness /path/to/App \
 
 テストコマンドはミュータントごとに実行され、アクティブなミュータントは `STE_MUTANT` と `TEST_RUNNER_STE_MUTANT` の両方で渡されます（`xcodebuild test` は `TEST_RUNNER_` 付きの環境変数をテストプロセスに転送します）。
 
-カスタムモードではカバレッジを取得しないため、テストから実行されないメソッドは `not-covered` ではなく `pseudo-tested` として報告されます。
+カスタムモードではカバレッジを取得しないため、テストから実行されないメソッドは `not-covered` ではなく `pseudo-tested` として報告されます。referenced 列を出すには、ビルドが書き出すインデックスストアを `--index-store-path` で渡します（[テストからの静的な参照](docs/ja/methods/static-references.md#インデックスが使えないとき) を参照）。
 
 ### CI での例
 
@@ -108,11 +123,10 @@ swift run swift-test-effectiveness . --since origin/main --format markdown -o ef
 
 - [基本概念](docs/ja/concepts.md)：テストの effectiveness とは何か、PIE モデル、「テストが欠けている」の意味、referenced / executed / verified の 3 列、スコアを出さない理由
 - 現在実装している手法
+  - [テストからの静的な参照](docs/ja/methods/static-references.md)：referenced 列を埋める
   - [カバレッジ](docs/ja/methods/coverage.md)：executed 列を埋める
   - [極端ミューテーション](docs/ja/methods/extreme-mutation.md)：verified 列を埋める
 - [ARCHITECTURE.ja.md](ARCHITECTURE.ja.md)：パイプライン、各手法の実装、手法の追加方法
-
-referenced 列（宣言を直接呼ぶテストがあるか）はまだ実装していません。
 
 ## 開発
 

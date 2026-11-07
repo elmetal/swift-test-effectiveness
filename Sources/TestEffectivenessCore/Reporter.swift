@@ -77,6 +77,9 @@ public enum Reporter {
         if !report.coverageAvailable {
             out += "(coverage unavailable: uncovered methods, including ones in inactive `#if` blocks, are reported as pseudo-tested)\n"
         }
+        if !report.referencesAvailable {
+            out += "(no index store: the referenced column is unknown)\n"
+        }
         for classification in sectionOrder {
             let methods = report.methods(classification)
             guard !methods.isEmpty else { continue }
@@ -84,9 +87,11 @@ public enum Reporter {
             let detailed = classification == .pseudoTested || classification == .partiallyTested
             if !detailed { out += "\n" }
             for result in methods {
-                out += "\(detailed ? "\n" : "")  \(location(result.method))  \(signature(result.method))\n"
+                let suffix = detailed ? "" : referenceSuffix(result).map { "  (\($0))" } ?? ""
+                out += "\(detailed ? "\n" : "")  \(location(result.method))  \(signature(result.method))\(suffix)\n"
                 switch classification {
                 case .pseudoTested, .partiallyTested:
+                    if let note = referenceNote(result) { out += "    \(note)\n" }
                     if let note = executionNote(result, in: report) { out += "    \(note)\n" }
                     out += "    survived: \(result.survivingMutants.map(\.mutant.mutation.summary).joined(separator: ", "))\n"
                     let detected = result.mutants.filter(\.isDetected)
@@ -122,6 +127,9 @@ public enum Reporter {
         if !report.coverageAvailable {
             out += "\n> Coverage was unavailable, so uncovered methods (including ones in inactive `#if` blocks) appear as pseudo-tested.\n"
         }
+        if !report.referencesAvailable {
+            out += "\n> No index store was available, so the referenced column is unknown.\n"
+        }
         for classification in sectionOrder {
             let methods = report.methods(classification)
             guard !methods.isEmpty else { continue }
@@ -130,6 +138,7 @@ public enum Reporter {
             case .pseudoTested, .partiallyTested:
                 for result in methods {
                     out += "- **`\(result.method.name)`** — `\(location(result.method))`\n"
+                    if let note = referenceNote(result) { out += "  - \(note)\n" }
                     if let note = executionNote(result, in: report) { out += "  - \(note)\n" }
                     for mutant in result.survivingMutants {
                         out += "  - \(mutant.mutant.mutation.summary) survived. \(advice(for: mutant.mutant.mutation, method: result.method.name))\n"
@@ -137,7 +146,8 @@ public enum Reporter {
                 }
             case .notCovered, .tested:
                 for result in methods {
-                    out += "- `\(result.method.name)` — `\(location(result.method))`\n"
+                    let suffix = referenceSuffix(result).map { " — \($0)" } ?? ""
+                    out += "- `\(result.method.name)` — `\(location(result.method))`\(suffix)\n"
                 }
             }
         }
@@ -152,6 +162,25 @@ public enum Reporter {
     }
 
     // MARK: - Helpers
+
+    /// For executed methods whose mutants survived: is any test about this method at all?
+    static func referenceNote(_ result: MethodResult) -> String? {
+        guard result.referenced == .notReferenced else { return nil }
+        return "referenced: false (no test calls it directly; it only runs inside other code). "
+            + "Write a test whose subject is `\(result.method.name)`."
+    }
+
+    /// The combinations of the referenced column worth pointing out in the short lists.
+    static func referenceSuffix(_ result: MethodResult) -> String? {
+        switch (result.classification, result.referenced) {
+        case (.notCovered, .referenced):
+            "referenced by a test but never executed: check for skipped tests, injected mocks or dispatch to another type"
+        case (.tested, .notReferenced):
+            "tested only indirectly: no test calls it directly"
+        default:
+            nil
+        }
+    }
 
     /// Shown when coverage was collected but has no data for this method, so surviving mutants do
     /// not tell whether the method ran. When coverage is unavailable altogether, the report header

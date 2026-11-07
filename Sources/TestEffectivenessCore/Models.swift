@@ -184,8 +184,22 @@ public enum ExecutionStatus: String, Codable, Sendable {
     }
 }
 
+/// The referenced column: does any test refer to the method directly? Read from the compiler's
+/// index, so it needs no test run. See `docs/methods/static-references.md`.
+public enum ReferenceStatus: String, Codable, Sendable {
+    /// A test, or a test-target helper it calls, refers to the method. A call through a protocol
+    /// or an overridable method counts only for the concrete types the same test scope names.
+    case referenced = "true"
+    /// The index has the method, but no test refers to it directly.
+    case notReferenced = "false"
+    /// No index data (index unavailable, or the method is not in it).
+    case unknown
+}
+
 public struct MethodResult: Codable, Hashable, Sendable {
     public var method: MethodInfo
+    /// The referenced column.
+    public var referenced: ReferenceStatus
     /// The executed column.
     public var executed: ExecutionStatus
     /// How the columns read together (Descartes' categories plus `not-covered`).
@@ -194,10 +208,11 @@ public struct MethodResult: Codable, Hashable, Sendable {
     public var mutants: [MutantResult]
 
     public init(
-        method: MethodInfo, executed: ExecutionStatus,
+        method: MethodInfo, referenced: ReferenceStatus = .unknown, executed: ExecutionStatus,
         classification: MethodClassification, mutants: [MutantResult]
     ) {
         self.method = method
+        self.referenced = referenced
         self.executed = executed
         self.classification = classification
         self.mutants = mutants
@@ -220,12 +235,18 @@ public struct SkippedMethod: Codable, Hashable, Sendable {
 public struct AnalysisReport: Codable, Sendable {
     public var projectPath: String
     public var coverageAvailable: Bool
+    /// Whether the referenced column was computed from an index.
+    public var referencesAvailable: Bool
     public var methods: [MethodResult]
     public var skipped: [SkippedMethod]
 
-    public init(projectPath: String, coverageAvailable: Bool, methods: [MethodResult], skipped: [SkippedMethod]) {
+    public init(
+        projectPath: String, coverageAvailable: Bool, referencesAvailable: Bool = false,
+        methods: [MethodResult], skipped: [SkippedMethod]
+    ) {
         self.projectPath = projectPath
         self.coverageAvailable = coverageAvailable
+        self.referencesAvailable = referencesAvailable
         self.methods = methods
         self.skipped = skipped
     }

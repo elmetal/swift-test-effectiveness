@@ -55,7 +55,7 @@ The in-scope meanings map to three independent columns per declaration:
 
 | Column | Question | Nature | Methods |
 |---|---|---|---|
-| referenced | does a test call this declaration directly? | intent, static | call graph from test functions |
+| referenced | does a test call this declaration directly? | intent, static | [static test references](methods/static-references.md) |
 | executed | was it run during the tests? | fact, dynamic | [coverage](methods/coverage.md) |
 | verified | is a fault in it detected? | fact, dynamic | [extreme mutation](methods/extreme-mutation.md) (coarse), traditional mutation (fine) |
 

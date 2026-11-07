@@ -123,6 +123,7 @@ struct ReporterTests {
     @Test func jsonRoundTrips() throws {
         let json = try Reporter.render(report, format: .json)
         #expect(json.contains("\"executed\" : \"true\""))
+        #expect(json.contains("\"referenced\" : \"unknown\""))
         let decoded = try JSONDecoder().decode(AnalysisReport.self, from: Data(json.utf8))
         #expect(decoded.methods.first?.executed == .executed)
         #expect(decoded.methods.first?.classification == .partiallyTested)
@@ -153,6 +154,43 @@ struct ReporterTests {
         // Without coverage every method is unknown; the header says so once instead.
         let noCoverage = try Reporter.render(pseudoTested(executed: .unknown, coverageAvailable: false), format: format)
         #expect(!noCoverage.contains(note))
+    }
+
+    @Test(arguments: [ReportFormat.text, .markdown])
+    func referencedColumnIsExplainedWhereItMatters(_ format: ReportFormat) throws {
+        let info = { (name: String, line: Int) in
+            MethodInfo(
+                file: "Sources/A.swift", name: name, kind: .function,
+                declarationStart: SourcePosition(line: line, column: 5), declarationEnd: SourcePosition(line: line, column: 30),
+                bodyStart: SourcePosition(line: line, column: 20), returnType: "Int"
+            )
+        }
+        let survived = [MutantResult(mutant: Mutant(id: 1, mutation: .returnNumber("0")), outcome: .survived)]
+        let killed = [MutantResult(mutant: Mutant(id: 2, mutation: .returnNumber("0")), outcome: .killed)]
+        let notRun = [MutantResult(mutant: Mutant(id: 3, mutation: .returnNumber("0")), outcome: .notRun)]
+        let report = AnalysisReport(
+            projectPath: "/p", coverageAvailable: true, referencesAvailable: true,
+            methods: [
+                MethodResult(method: info("Incidental.f()", 1), referenced: .notReferenced, executed: .executed,
+                             classification: .pseudoTested, mutants: survived),
+                MethodResult(method: info("Direct.g()", 2), referenced: .referenced, executed: .executed,
+                             classification: .pseudoTested, mutants: survived),
+                MethodResult(method: info("Mocked.h()", 3), referenced: .referenced, executed: .notExecuted,
+                             classification: .notCovered, mutants: notRun),
+                MethodResult(method: info("Indirect.i()", 4), referenced: .notReferenced, executed: .executed,
+                             classification: .tested, mutants: killed),
+            ],
+            skipped: []
+        )
+        let rendered = try Reporter.render(report, format: format)
+        #expect(rendered.contains("Write a test whose subject is `Incidental.f()`"))
+        #expect(!rendered.contains("subject is `Direct.g()`"))
+        #expect(rendered.contains("referenced by a test but never executed"))
+        #expect(rendered.contains("tested only indirectly"))
+        #expect(!rendered.contains("no index store"))
+
+        let withoutIndex = AnalysisReport(projectPath: "/p", coverageAvailable: true, methods: [], skipped: [])
+        #expect(try Reporter.render(withoutIndex, format: format).lowercased().contains("no index store"))
     }
 }
 
