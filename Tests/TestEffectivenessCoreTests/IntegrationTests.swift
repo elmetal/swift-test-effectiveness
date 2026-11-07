@@ -2,16 +2,18 @@ import Foundation
 import Testing
 @testable import TestEffectivenessCore
 
-/// End-to-end run against `Fixtures/SampleProject`. Slow (builds the fixture), so it only runs
+/// End-to-end runs against the packages in `Tests/Fixtures`. Slow (builds the fixture), so it only runs
 /// when `STE_INTEGRATION=1`. Set `STE_SWIFT` to choose the `swift` executable.
 @Suite(.enabled(if: ProcessInfo.processInfo.environment["STE_INTEGRATION"] == "1"), .serialized)
 struct IntegrationTests {
-    static let repositoryRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    /// `Tests/Fixtures`. It sits outside every target directory, so SwiftPM does not compile it.
+    static let fixturesRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Fixtures")
     static let swift = ProcessInfo.processInfo.environment["STE_SWIFT"] ?? "swift"
 
     private func analyze(_ fixture: String, throwMutants: Bool = false) throws -> AnalysisReport {
-        let project = Self.repositoryRoot.appendingPathComponent("Fixtures/\(fixture)")
+        let project = Self.fixturesRoot.appendingPathComponent(fixture)
         let configuration = AnalysisConfiguration(
             projectPath: project,
             workDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("ste-it-\(fixture)"),
@@ -39,7 +41,7 @@ struct IntegrationTests {
         #expect(report.coverageAvailable)
     }
 
-    /// The schema of every construct in `Fixtures/EdgeCases` must compile and the baseline must pass.
+    /// The schema of every construct in `Tests/Fixtures/EdgeCases` must compile and the baseline must pass.
     @Test func edgeCasesCompile() throws {
         let report = try analyze("EdgeCases", throwMutants: true)
         #expect(report.methods.count > 20)
