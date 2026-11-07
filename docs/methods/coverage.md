@@ -20,9 +20,15 @@ The result is used in two ways:
 | `--no-coverage` | coverage is not collected |
 | custom mode (`--build-command` / `--test-command`) | coverage is not collected |
 | coverage data cannot be read or parsed | a message is logged and coverage is treated as unavailable |
-| a method has no matching function in the data | that method is treated as unknown |
+| a method has no matching function in the data | that method is treated as unknown (but see [Conditional compilation](#conditional-compilation)) |
 
 In all of these cases the executed column is unknown, and the verified methods run on every affected method. A method that no test executes then fails verification instead of being reported as `not-covered` (extreme mutation, for example, reports it as `pseudo-tested`). The report says whether coverage was available.
+
+## Conditional compilation
+
+The tool parses every clause of an `#if`, active or not, because which clause is active is only known to the build (`-D` flags, target platform, available modules). The coverage data settles it: llvm-cov lists every function that was compiled, including ones no test ran. So a method declared inside `#if` that has no function in the data was compiled out, and it is reported under *Not analyzed* instead of being mutated.
+
+Without coverage this is not possible, and a method in an inactive `#if` clause is reported as `pseudo-tested` (its mutants cannot be detected because they do not exist in the binary).
 
 ## Limits
 

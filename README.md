@@ -56,7 +56,7 @@ The project is copied to `<package>/.build/test-effectiveness` and analysed ther
 
 | Option | Description |
 |---|---|
-| `--since <rev>` | Only analyse declarations that overlap lines changed since `<rev>` (for pull requests) |
+| `--since <rev>` | Only analyse declarations that overlap lines changed since `<rev>`, including lines deleted from them and new untracked files (for pull requests) |
 | `--target <name>` | Only analyse this target (repeatable) |
 | `--test-filter <pattern>` | Passed to `swift test --filter` |
 | `--exclude <substring>` | Skip files whose path contains this string (repeatable) |

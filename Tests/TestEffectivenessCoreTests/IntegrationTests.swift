@@ -45,5 +45,11 @@ struct IntegrationTests {
     @Test func edgeCasesCompile() throws {
         let report = try analyze("EdgeCases", throwMutants: true)
         #expect(report.methods.count > 20)
+        // Compiled out: reported as not analyzed, not as pseudo-tested.
+        let neverCompiled = report.skipped.first { $0.method.name.hasSuffix(".neverCompiled()") }
+        #expect(neverCompiled?.reason == Analyzer.notCompiledReason)
+        #expect(!report.methods.contains { $0.method.name.hasSuffix(".neverCompiled()") })
+        // `#if DEBUG` is active in a debug build and must still be analysed.
+        #expect(report.methods.contains { $0.method.name.hasSuffix(".debugOnly()") })
     }
 }

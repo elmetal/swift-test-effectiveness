@@ -14,6 +14,9 @@ public struct DiscoveredMethod: Sendable {
     /// once statements are placed in front of it.
     var implicitReturnInsertion: Int?
     var isResultBuilder: Bool
+    /// Declared inside an `#if` clause. Whether that clause is active depends on the build
+    /// configuration, so the method may not be compiled at all.
+    var isConditionallyCompiled: Bool = false
 
     public var mutations: [ExtremeMutation] {
         if case .mutate(let mutations) = decision { return mutations }
@@ -60,6 +63,7 @@ public enum MethodDiscovery {
         let converter: SourceLocationConverter
         let options: DiscoveryOptions
         var typeStack: [String] = []
+        var ifConfigDepth = 0
         var methods: [DiscoveredMethod] = []
 
         init(path: String, converter: SourceLocationConverter, options: DiscoveryOptions) {
@@ -88,6 +92,13 @@ public enum MethodDiscovery {
         override func visit(_ node: DeinitializerDeclSyntax) -> SyntaxVisitorContinueKind { .skipChildren }
         override func visit(_ node: SubscriptDeclSyntax) -> SyntaxVisitorContinueKind { .skipChildren }
         override func visit(_ node: ClosureExprSyntax) -> SyntaxVisitorContinueKind { .skipChildren }
+
+        // Every clause is visited, active or not: which one is active is only known to the build.
+        override func visit(_ node: IfConfigClauseSyntax) -> SyntaxVisitorContinueKind {
+            ifConfigDepth += 1
+            return .visitChildren
+        }
+        override func visitPost(_ node: IfConfigClauseSyntax) { ifConfigDepth -= 1 }
 
         private func push(_ name: String) -> SyntaxVisitorContinueKind {
             typeStack.append(name)
@@ -204,7 +215,8 @@ public enum MethodDiscovery {
                 bodyContentStart: leftBrace.endPositionBeforeTrailingTrivia.utf8Offset,
                 bodyContentEnd: rightBrace.positionAfterSkippingLeadingTrivia.utf8Offset,
                 implicitReturnInsertion: implicitReturn,
-                isResultBuilder: isResultBuilder
+                isResultBuilder: isResultBuilder,
+                isConditionallyCompiled: ifConfigDepth > 0
             ))
         }
 

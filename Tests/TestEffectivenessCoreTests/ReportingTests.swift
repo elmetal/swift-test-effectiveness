@@ -42,9 +42,49 @@ struct GitDiffTests {
         """
         let changed = ChangedLines.parse(diff: diff, root: URL(fileURLWithPath: "/repo"))
         #expect(changed.linesByFile.count == 1)
-        #expect(changed.linesByFile.values.first == [4, 5, 12])
+        // `+21,0`: lines were deleted between new lines 21 and 22.
+        #expect(changed.linesByFile.values.first == [4, 5, 12, 21, 22])
         #expect(changed.intersects(file: "/repo/Sources/A.swift", lines: 1...4))
         #expect(!changed.intersects(file: "/repo/Sources/A.swift", lines: 6...11))
+    }
+
+    @Test func deletionInsideAMethodSelectsIt() {
+        let diff = """
+        --- a/Sources/A.swift
+        +++ b/Sources/A.swift
+        @@ -11 +10,0 @@ struct S {
+        -        log(x)
+        @@ -1 +0,0 @@
+        -// header
+        """
+        let changed = ChangedLines.parse(diff: diff, root: URL(fileURLWithPath: "/repo"))
+        #expect(changed.linesByFile.values.first == [1, 10, 11])
+        // func f() spanning lines 8...12 lost its line 11.
+        #expect(changed.intersects(file: "/repo/Sources/A.swift", lines: 8...12))
+        #expect(!changed.intersects(file: "/repo/Sources/A.swift", lines: 14...20))
+    }
+
+    @Test func untrackedFilesCountAsEntirelyChanged() throws {
+        let fileManager = FileManager.default
+        let repo = fileManager.temporaryDirectory.appendingPathComponent("ste-git-\(UUID().uuidString)")
+        try fileManager.createDirectory(at: repo.appendingPathComponent("Sources"), withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: repo) }
+        func git(_ arguments: String...) throws {
+            let result = try ProcessRunner.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"] + arguments, in: repo
+            )
+            #expect(result.exitCode == 0, "\(result.output)")
+        }
+        try git("init", "-q")
+        try "func a() {}\n".write(to: repo.appendingPathComponent("Sources/Old.swift"), atomically: true, encoding: .utf8)
+        try git("add", ".")
+        try git("commit", "-q", "-m", "init")
+        try "func b() {}\n".write(to: repo.appendingPathComponent("Sources/New.swift"), atomically: true, encoding: .utf8)
+
+        // Run from a subdirectory: paths must still resolve against the repository root.
+        let changed = try ChangedLines.load(since: "HEAD", in: repo.appendingPathComponent("Sources"))
+        #expect(changed.intersects(file: repo.appendingPathComponent("Sources/New.swift").path, lines: 1...1))
+        #expect(!changed.intersects(file: repo.appendingPathComponent("Sources/Old.swift").path, lines: 1...1))
     }
 }
 
