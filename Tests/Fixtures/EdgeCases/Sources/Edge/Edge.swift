@@ -78,6 +78,10 @@ public struct Edge: Sendable {
     #if DEBUG
     public func debugOnly() -> Int { 7 }
     #endif
+
+    #if STE_NEVER_DEFINED
+    public func neverCompiled() -> Int { 8 }
+    #endif
 }
 
 public protocol Describable { func describe() -> String }

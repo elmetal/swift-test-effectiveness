@@ -75,7 +75,7 @@ public enum Reporter {
     static func text(_ report: AnalysisReport) -> String {
         var out = "Extreme mutation analysis of \(report.projectPath)\n"
         if !report.coverageAvailable {
-            out += "(coverage unavailable: uncovered methods are reported as pseudo-tested)\n"
+            out += "(coverage unavailable: uncovered methods, including ones in inactive `#if` blocks, are reported as pseudo-tested)\n"
         }
         for classification in sectionOrder {
             let methods = report.methods(classification)
@@ -119,7 +119,7 @@ public enum Reporter {
         let counts = sectionOrder.map { "\(title($0)): \(report.methods($0).count)" }
         out += counts.joined(separator: " · ") + " · Not analyzed: \(report.skipped.count)\n"
         if !report.coverageAvailable {
-            out += "\n> Coverage was unavailable, so uncovered methods appear as pseudo-tested.\n"
+            out += "\n> Coverage was unavailable, so uncovered methods (including ones in inactive `#if` blocks) appear as pseudo-tested.\n"
         }
         for classification in sectionOrder {
             let methods = report.methods(classification)

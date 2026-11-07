@@ -56,7 +56,7 @@ swift run swift-test-effectiveness /path/to/package
 
 | オプション | 説明 |
 |---|---|
-| `--since <rev>` | `<rev>` 以降に変更された行と重なる宣言だけを解析する（PR 用） |
+| `--since <rev>` | `<rev>` 以降に変更された行と重なる宣言だけを解析する。行が削除された宣言と、まだ git に追加していない新しいファイルも含む（PR 用） |
 | `--target <name>` | 指定ターゲットのみ（複数可） |
 | `--test-filter <pattern>` | `swift test --filter` に渡す |
 | `--exclude <substring>` | パスに文字列を含むファイルを除外（複数可） |

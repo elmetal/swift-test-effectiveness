@@ -109,7 +109,7 @@ public final class Analyzer: @unchecked Sendable {
     }
 
     public func run() throws -> AnalysisReport {
-        let (methods, skipped) = try plan()
+        var (methods, skipped) = try plan()
         log("Found \(methods.count) methods to mutate (\(skipped.count) not analyzable).")
 
         var nextID = 1
@@ -141,6 +141,13 @@ public final class Analyzer: @unchecked Sendable {
                 file: copyRoot.appendingPathComponent(method.info.file).path,
                 bodyStart: method.info.bodyStart
             )
+            // llvm-cov lists every compiled function, executed or not. A method inside `#if` that is
+            // missing from the data was most likely compiled out; running its mutants would only
+            // report it as pseudo-tested.
+            if coverage != nil, reached == nil, method.isConditionallyCompiled {
+                skipped.append(SkippedMethod(method: method.info, reason: Self.notCompiledReason))
+                continue
+            }
             var mutantResults: [MutantResult] = []
             for mutant in mutants {
                 if reached == false {
@@ -165,6 +172,9 @@ public final class Analyzer: @unchecked Sendable {
             skipped: skipped
         )
     }
+
+    static let notCompiledReason =
+        "inside `#if` and missing from the coverage data (not compiled in this build configuration)"
 
     // MARK: - Sources
 

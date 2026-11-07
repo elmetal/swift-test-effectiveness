@@ -77,6 +77,32 @@ struct MethodDiscoveryTests {
         }
     }
 
+    @Test func marksMethodsInsideIfConfig() {
+        let methods = discover("""
+        struct S {
+            func always() {}
+            #if DEBUG
+            func debug() {}
+            #elseif os(Linux)
+            func linux() {}
+            #else
+            #if FOO
+            func nested() {}
+            #endif
+            #endif
+            func after() {}
+        }
+        #if canImport(UIKit)
+        extension S { func ui() {} }
+        #endif
+        """)
+        let conditional = Dictionary(uniqueKeysWithValues: methods.map { ($0.info.name, $0.isConditionallyCompiled) })
+        #expect(conditional == [
+            "S.always()": false, "S.debug()": true, "S.linux()": true,
+            "S.nested()": true, "S.after()": false, "S.ui()": true,
+        ])
+    }
+
     @Test func viewBodyIsAResultBuilder() {
         let methods = discover("""
         struct V: View {
