@@ -1,0 +1,89 @@
+import Foundation
+import Testing
+@testable import TestEffectivenessCore
+
+struct CoverageMapTests {
+    @Test func matchesFunctionByBodyBrace() throws {
+        let json = """
+        {"data":[{"functions":[
+          {"name":"f","count":3,"regions":[[7,48,9,6,3,0,0,0]],"filenames":["/p/A.swift"]},
+          {"name":"g","count":0,"regions":[[12,10,14,6,0,0,0,0]],"filenames":["/p/A.swift"]},
+          {"name":"h","count":1,"regions":[[20,30,20,40,1,0,0,0]],"filenames":["/p/A.swift"]},
+          {"name":"closure","count":0,"regions":[[20,60,20,70,0,0,0,0]],"filenames":["/p/A.swift"]}
+        ]}]}
+        """
+        let map = try CoverageMap(jsonData: Data(json.utf8))
+        #expect(map.wasExecuted(file: "/p/A.swift", bodyStart: SourcePosition(line: 7, column: 48)) == true)
+        #expect(map.wasExecuted(file: "/p/A.swift", bodyStart: SourcePosition(line: 12, column: 10)) == false)
+        #expect(map.wasExecuted(file: "/p/A.swift", bodyStart: SourcePosition(line: 20, column: 30)) == true)
+        #expect(map.wasExecuted(file: "/p/A.swift", bodyStart: SourcePosition(line: 20, column: 55)) == false)
+        #expect(map.wasExecuted(file: "/p/A.swift", bodyStart: SourcePosition(line: 99, column: 1)) == nil)
+        #expect(map.wasExecuted(file: "/p/B.swift", bodyStart: SourcePosition(line: 7, column: 48)) == nil)
+    }
+}
+
+struct GitDiffTests {
+    @Test func parsesAddedAndModifiedLines() {
+        let diff = """
+        diff --git a/Sources/A.swift b/Sources/A.swift
+        --- a/Sources/A.swift
+        +++ b/Sources/A.swift
+        @@ -3,0 +4,2 @@ struct S {
+        +    func f() {}
+        +    func g() {}
+        @@ -10 +12 @@
+        -old
+        +new
+        @@ -20,3 +21,0 @@
+        diff --git a/Sources/Gone.swift b/Sources/Gone.swift
+        --- a/Sources/Gone.swift
+        +++ /dev/null
+        @@ -1,3 +0,0 @@
+        """
+        let changed = ChangedLines.parse(diff: diff, root: URL(fileURLWithPath: "/repo"))
+        #expect(changed.linesByFile.count == 1)
+        #expect(changed.linesByFile.values.first == [4, 5, 12])
+        #expect(changed.intersects(file: "/repo/Sources/A.swift", lines: 1...4))
+        #expect(!changed.intersects(file: "/repo/Sources/A.swift", lines: 6...11))
+    }
+}
+
+struct ReporterTests {
+    private var report: AnalysisReport {
+        let method = MethodInfo(
+            file: "Sources/A.swift", name: "Calc.isPositive(_:)", kind: .function,
+            declarationStart: SourcePosition(line: 3, column: 5), declarationEnd: SourcePosition(line: 5, column: 5),
+            bodyStart: SourcePosition(line: 3, column: 40), returnType: "Bool"
+        )
+        let mutants = [
+            MutantResult(mutant: Mutant(id: 1, mutation: .returnBool(true)), outcome: .survived),
+            MutantResult(mutant: Mutant(id: 2, mutation: .returnBool(false)), outcome: .killed),
+        ]
+        return AnalysisReport(
+            projectPath: "/p", coverageAvailable: true,
+            methods: [MethodResult(method: method, classification: .partiallyTested, mutants: mutants)],
+            skipped: []
+        )
+    }
+
+    @Test func textReportGivesActionableAdvice() throws {
+        let text = try Reporter.render(report, format: .text)
+        #expect(text.contains("Partially tested (1)"))
+        #expect(text.contains("Sources/A.swift:3"))
+        #expect(text.contains("can always return `true` without any test failing. Add a case where it must return `false`."))
+    }
+
+    @Test(arguments: ReportFormat.allCases)
+    func reportsContainNoAggregateScore(_ format: ReportFormat) throws {
+        let rendered = try Reporter.render(report, format: format)
+        #expect(!rendered.contains("%"))
+        #expect(!rendered.lowercased().contains("score"))
+    }
+
+    @Test func jsonRoundTrips() throws {
+        let json = try Reporter.render(report, format: .json)
+        let decoded = try JSONDecoder().decode(AnalysisReport.self, from: Data(json.utf8))
+        #expect(decoded.methods.first?.classification == .partiallyTested)
+        #expect(decoded.methods.first?.survivingMutants.map(\.mutant.mutation) == [.returnBool(true)])
+    }
+}
