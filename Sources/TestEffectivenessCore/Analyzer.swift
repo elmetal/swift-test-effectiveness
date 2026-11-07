@@ -160,6 +160,7 @@ public final class Analyzer: @unchecked Sendable {
             }
             results.append(MethodResult(
                 method: method.info,
+                executed: ExecutionStatus.resolve(coverage: reached, mutants: mutantResults),
                 classification: Classifier.classify(mutantResults),
                 mutants: mutantResults
             ))

@@ -40,7 +40,7 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 
 ### カバレッジ
 
-ベースラインを `--enable-code-coverage` 付きで実行し、出力された `llvm-cov export` の JSON を `CoverageMap` に読み込みます。各関数は、本体の開き括弧 `{` の位置で宣言に対応付けます。カバレッジがない、または読めない場合は列が不明になり、後段の層は全宣言に対して実行されます。
+ベースラインを `--enable-code-coverage` 付きで実行し、出力された `llvm-cov export` の JSON を `CoverageMap` に読み込みます。各関数は、本体の開き括弧 `{` の位置で宣言に対応付けます。カバレッジがない、または読めない場合は列が不明になり、後段の層は全宣言に対して実行されます。列は宣言ごとに保持し（`MethodResult.executed`）、`ExecutionStatus.resolve` がミュータントの結果と合わせて決めます。殺されたミュータントがあれば、カバレッジより優先します。
 
 ### 極端ミューテーション
 

@@ -39,6 +39,9 @@ struct IntegrationTests {
         ])
         #expect(report.skipped.map(\.method.name) == ["Calculator.pair()"])
         #expect(report.coverageAvailable)
+        let executed = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.executed) })
+        #expect(executed["Calculator.unused()"] == .notExecuted)
+        #expect(report.methods.filter { $0.method.name != "Calculator.unused()" }.allSatisfy { $0.executed == .executed })
     }
 
     /// The schema of every construct in `Tests/Fixtures/EdgeCases` must compile and the baseline must pass.

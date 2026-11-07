@@ -40,7 +40,7 @@ Workspace details:
 
 ### Coverage
 
-The baseline runs with `--enable-code-coverage`, and the resulting `llvm-cov export` JSON is loaded into a `CoverageMap`. Each function is matched to a declaration by the position of its body's opening `{`. When coverage is missing or unreadable, the column is unknown and later layers run on every declaration.
+The baseline runs with `--enable-code-coverage`, and the resulting `llvm-cov export` JSON is loaded into a `CoverageMap`. Each function is matched to a declaration by the position of its body's opening `{`. When coverage is missing or unreadable, the column is unknown and later layers run on every declaration. The column is stored per declaration (`MethodResult.executed`); `ExecutionStatus.resolve` combines it with the mutant outcomes, letting a killed mutant override coverage.
 
 ### Extreme mutation
 
