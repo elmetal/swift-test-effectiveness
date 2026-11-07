@@ -161,13 +161,44 @@ public enum MethodClassification: String, Codable, Sendable, CaseIterable {
     case tested
 }
 
+/// The executed column: did any test run the method? Filled from coverage, independently of the
+/// verified column (the mutant outcomes).
+public enum ExecutionStatus: String, Codable, Sendable {
+    /// Coverage shows the method ran, or one of its mutants was killed (a test observed it).
+    case executed = "true"
+    /// Coverage shows no test ran the method.
+    case notExecuted = "false"
+    /// No coverage data for the method. Surviving mutants may then mean either "not executed"
+    /// or "executed but not verified".
+    case unknown
+
+    /// Combines coverage with the mutant outcomes. Dynamic evidence wins: a killed mutant means
+    /// a test ran the method and noticed the change, whatever coverage says.
+    public static func resolve(coverage: Bool?, mutants: [MutantResult]) -> ExecutionStatus {
+        if mutants.contains(where: { $0.outcome == .killed }) { return .executed }
+        switch coverage {
+        case true?: return .executed
+        case false?: return .notExecuted
+        case nil: return .unknown
+        }
+    }
+}
+
 public struct MethodResult: Codable, Hashable, Sendable {
     public var method: MethodInfo
+    /// The executed column.
+    public var executed: ExecutionStatus
+    /// How the columns read together (Descartes' categories plus `not-covered`).
     public var classification: MethodClassification
+    /// The verified column's evidence: each extreme mutant and its outcome.
     public var mutants: [MutantResult]
 
-    public init(method: MethodInfo, classification: MethodClassification, mutants: [MutantResult]) {
+    public init(
+        method: MethodInfo, executed: ExecutionStatus,
+        classification: MethodClassification, mutants: [MutantResult]
+    ) {
         self.method = method
+        self.executed = executed
         self.classification = classification
         self.mutants = mutants
     }

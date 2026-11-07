@@ -87,6 +87,7 @@ public enum Reporter {
                 out += "\(detailed ? "\n" : "")  \(location(result.method))  \(signature(result.method))\n"
                 switch classification {
                 case .pseudoTested, .partiallyTested:
+                    if let note = executionNote(result, in: report) { out += "    \(note)\n" }
                     out += "    survived: \(result.survivingMutants.map(\.mutant.mutation.summary).joined(separator: ", "))\n"
                     let detected = result.mutants.filter(\.isDetected)
                     if !detected.isEmpty {
@@ -129,6 +130,7 @@ public enum Reporter {
             case .pseudoTested, .partiallyTested:
                 for result in methods {
                     out += "- **`\(result.method.name)`** — `\(location(result.method))`\n"
+                    if let note = executionNote(result, in: report) { out += "  - \(note)\n" }
                     for mutant in result.survivingMutants {
                         out += "  - \(mutant.mutant.mutation.summary) survived. \(advice(for: mutant.mutant.mutation, method: result.method.name))\n"
                     }
@@ -150,6 +152,14 @@ public enum Reporter {
     }
 
     // MARK: - Helpers
+
+    /// Shown when coverage was collected but has no data for this method, so surviving mutants do
+    /// not tell whether the method ran. When coverage is unavailable altogether, the report header
+    /// says so once instead.
+    static func executionNote(_ result: MethodResult, in report: AnalysisReport) -> String? {
+        guard report.coverageAvailable, result.executed == .unknown else { return nil }
+        return "executed: unknown (no coverage data for this method; it may not be run by any test at all)"
+    }
 
     static func location(_ method: MethodInfo) -> String {
         "\(method.file):\(method.declarationStart.line)"

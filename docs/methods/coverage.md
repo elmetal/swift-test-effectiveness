@@ -13,6 +13,12 @@ The result is used in two ways:
 1. Methods that no test executes are reported as `not-covered` (PIE step E fails). This is a different problem from `pseudo-tested` and needs a different fix: write a test, rather than add an assertion.
 2. Unexecuted methods are excluded from the more expensive methods that fill the verified column. A fault in code that never runs cannot be detected, so checking would only cost time.
 
+## Output
+
+Each analysed method carries the column as `executed` in the JSON report: `"true"`, `"false"` or `"unknown"`. Coverage fills it, but a killed mutant overrides it with `"true"`: a test observed the method's behaviour change, so the method ran (dynamic evidence wins, see [Concepts](../concepts.md)). A timed-out mutant does not count, since a slow machine can time out too.
+
+As a result, only methods whose mutants all survived can stay `unknown`. In text and Markdown reports such a method gets a note, because its surviving mutants do not say whether it is unverified or not executed at all. When coverage is unavailable for the whole run, the header says so once instead.
+
 ## When coverage is unavailable
 
 | Situation | Behaviour |

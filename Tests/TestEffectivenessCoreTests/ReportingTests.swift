@@ -101,7 +101,7 @@ struct ReporterTests {
         ]
         return AnalysisReport(
             projectPath: "/p", coverageAvailable: true,
-            methods: [MethodResult(method: method, classification: .partiallyTested, mutants: mutants)],
+            methods: [MethodResult(method: method, executed: .executed, classification: .partiallyTested, mutants: mutants)],
             skipped: []
         )
     }
@@ -122,8 +122,55 @@ struct ReporterTests {
 
     @Test func jsonRoundTrips() throws {
         let json = try Reporter.render(report, format: .json)
+        #expect(json.contains("\"executed\" : \"true\""))
         let decoded = try JSONDecoder().decode(AnalysisReport.self, from: Data(json.utf8))
+        #expect(decoded.methods.first?.executed == .executed)
         #expect(decoded.methods.first?.classification == .partiallyTested)
         #expect(decoded.methods.first?.survivingMutants.map(\.mutant.mutation) == [.returnBool(true)])
+    }
+
+    private func pseudoTested(executed: ExecutionStatus, coverageAvailable: Bool) -> AnalysisReport {
+        let method = MethodInfo(
+            file: "Sources/A.swift", name: "Log.write(_:)", kind: .function,
+            declarationStart: SourcePosition(line: 8, column: 5), declarationEnd: SourcePosition(line: 9, column: 5),
+            bodyStart: SourcePosition(line: 8, column: 30), returnType: nil
+        )
+        let mutants = [MutantResult(mutant: Mutant(id: 1, mutation: .emptyBody), outcome: .survived)]
+        return AnalysisReport(
+            projectPath: "/p", coverageAvailable: coverageAvailable,
+            methods: [MethodResult(method: method, executed: executed, classification: .pseudoTested, mutants: mutants)],
+            skipped: []
+        )
+    }
+
+    @Test(arguments: [ReportFormat.text, .markdown])
+    func unknownExecutionIsFlaggedPerMethod(_ format: ReportFormat) throws {
+        let note = "executed: unknown"
+        let unknown = try Reporter.render(pseudoTested(executed: .unknown, coverageAvailable: true), format: format)
+        #expect(unknown.contains(note))
+        let known = try Reporter.render(pseudoTested(executed: .executed, coverageAvailable: true), format: format)
+        #expect(!known.contains(note))
+        // Without coverage every method is unknown; the header says so once instead.
+        let noCoverage = try Reporter.render(pseudoTested(executed: .unknown, coverageAvailable: false), format: format)
+        #expect(!noCoverage.contains(note))
+    }
+}
+
+struct ExecutionStatusTests {
+    private func result(_ outcome: MutantOutcome) -> MutantResult {
+        MutantResult(mutant: Mutant(id: 1, mutation: .emptyBody), outcome: outcome)
+    }
+
+    @Test func coverageFillsTheColumn() {
+        #expect(ExecutionStatus.resolve(coverage: true, mutants: [result(.survived)]) == .executed)
+        #expect(ExecutionStatus.resolve(coverage: false, mutants: [result(.notRun)]) == .notExecuted)
+        #expect(ExecutionStatus.resolve(coverage: nil, mutants: [result(.survived)]) == .unknown)
+    }
+
+    @Test func killedMutantProvesExecution() {
+        #expect(ExecutionStatus.resolve(coverage: nil, mutants: [result(.survived), result(.killed)]) == .executed)
+        #expect(ExecutionStatus.resolve(coverage: false, mutants: [result(.killed)]) == .executed)
+        // A timeout can come from a slow machine as well as from the mutant, so it proves nothing.
+        #expect(ExecutionStatus.resolve(coverage: nil, mutants: [result(.timedOut)]) == .unknown)
     }
 }
