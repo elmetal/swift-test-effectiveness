@@ -61,11 +61,28 @@ As in PIT/Descartes, a mutant that times out counts as detected.
 | local functions and closures | outside per-method classification |
 | `@inlinable` / `@_transparent` / `@_alwaysEmitIntoClient` | the mutant switch cannot be reached from their bodies ([details](../../ARCHITECTURE.md#mutant-schemata)) |
 | declarations in `main.swift` | top-level code initialisation order |
+| methods returning `Void` whose body only logs (unless `--no-arid`) | no test should assert on a log message ([arid bodies](#arid-bodies)) |
 | `some View` returned outside a result builder | an opaque type needs the same concrete type on every branch |
 | result builders other than `View` | unknown which constructs the builder supports |
 | tuples, `Result`, generic type parameters, user-defined types, … | no general default value |
 
 Methods that are not targeted are not silently dropped: the report lists them under *Not analyzed* with the reason.
+
+### Arid bodies
+
+The empty-body mutant of `func didTapRetry() { logger.info("retry") }` survives, but the fix the report would ask for, an assertion on a log message, is not one anyone should make. Such feedback teaches people to stop reading the report. Google's mutation testing suppresses mutants in this kind of code as *arid nodes* (Petrović & Ivanković 2018); the tool applies the same idea to whole method bodies.
+
+A body is arid if it has at least one statement and every statement is arid:
+
+- a call to `print`, `debugPrint`, `dump`, `NSLog`, `os_log`, `os_signpost`, `assert` or `assertionFailure`;
+- a call to `log`, `trace`, `debug`, `info`, `notice`, `warning`, `error`, `critical` or `fault` on a logger-like receiver: one with a component named `log` or ending in `logger` (`logger`, `self.logger`, `Self.logger`, `Log.network`, `Logger(…)`);
+- a call named with `--arid-call` (compared with the called expression, leading `self.` removed);
+- a bare `return`;
+- an `if`, `guard`, `defer` or `#if` whose statements are all arid, and whose conditions call nothing (a call in a condition may have a side effect).
+
+`try` and `await` are looked through. Only methods returning `Void` are affected: for any other return type the mutants replace the result, which tests should check whatever else the body does.
+
+The check is syntactic, so the receiver's type is not known: `logger.info(…)` counts even if `logger` is not a logger. Arguments are not inspected, so a side effect inside a log message (`print(queue.removeFirst())`) is missed. Analytics calls such as `track(…)` are not arid by default, because some teams do test them; add them with `--arid-call`. To analyse a module whose job is logging, pass `--no-arid`.
 
 ## Limits
 
@@ -81,4 +98,5 @@ All mutants are compiled into a single binary and selected at runtime (mutant sc
 - Niedermayr, Juergens, Wagner (2016). Will My Tests Tell Me If I Break This Code? *CSED@ICSE*.
 - Vera-Pérez, Monperrus, Baudry (2018). Descartes: A PITest Engine to Detect Pseudo-Tested Methods. *ASE*.
 - Vera-Pérez, Danglot, Monperrus, Baudry (2019). A Comprehensive Study of Pseudo-tested Methods. *Empirical Software Engineering*.
+- Petrović, Ivanković (2018). State of Mutation Testing at Google. *ICSE-SEIP*.
 - Budd, Angluin (1982). Two Notions of Correctness and Their Relation to Testing. *Acta Informatica*.

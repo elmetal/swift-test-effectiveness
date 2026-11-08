@@ -61,11 +61,28 @@
 | ローカル関数・クロージャ | メソッド単位の分類から外れる |
 | `@inlinable` / `@_transparent` / `@_alwaysEmitIntoClient` | 本体からミュータントのスイッチを参照できない（[詳細](../../../ARCHITECTURE.ja.md#mutant-schemata)） |
 | `main.swift` 内の宣言 | トップレベルコードの初期化順の制約 |
+| 本体がログ出力だけの `Void` メソッド（`--no-arid` 指定時を除く） | ログメッセージをアサートすべきテストはない（[arid な本体](#arid-な本体)） |
 | result builder 外で `some View` を返すメソッド | opaque 型は分岐ごとに同じ具象型が必要なため |
 | `View` 以外の result builder | builder がどの構文をサポートするか分からない |
 | タプル、`Result`、ジェネリック型パラメータ、ユーザー定義型など | 汎用的なデフォルト値がない |
 
 対象外のメソッドは黙って捨てず、レポートの *Not analyzed* に理由付きで列挙します。
+
+### arid な本体
+
+`func didTapRetry() { logger.info("retry") }` の空本体ミュータントは生き残ります。しかし、レポートが求めることになる対処（ログメッセージへのアサーション）は、誰もすべきでないものです。こうした指摘が混ざると、レポートが読まれなくなります。Google のミューテーションテストは、この種のコードのミュータントを *arid node* として抑制しています（Petrović & Ivanković 2018）。このツールは同じ考え方をメソッド本体全体に当てはめます。
+
+本体は、文が 1 つ以上あり、すべての文が arid なら arid です。
+
+- `print`、`debugPrint`、`dump`、`NSLog`、`os_log`、`os_signpost`、`assert`、`assertionFailure` の呼び出し
+- ロガーらしいレシーバーに対する `log`、`trace`、`debug`、`info`、`notice`、`warning`、`error`、`critical`、`fault` の呼び出し。ロガーらしいとは、`log` という名前か、`logger` で終わる名前の要素を含むこと（`logger`、`self.logger`、`Self.logger`、`Log.network`、`Logger(…)`）
+- `--arid-call` で指定した呼び出し（先頭の `self.` を除いた呼び出し式と比較する）
+- 値のない `return`
+- 中の文がすべて arid で、条件が何も呼び出さない `if`、`guard`、`defer`、`#if`（条件内の呼び出しは副作用を持ちうるため）
+
+`try` と `await` は無視して中身を見ます。対象になるのは `Void` を返すメソッドだけです。それ以外の戻り値型では、ミュータントは結果を置き換えるので、本体が他に何をしていてもテストで確かめるべきだからです。
+
+判定は構文だけで行うので、レシーバーの型は分かりません。`logger` が実際にはロガーでなくても `logger.info(…)` は arid とみなします。引数は見ないので、ログメッセージの中の副作用（`print(queue.removeFirst())`）は見逃します。`track(…)` のようなアナリティクス呼び出しはテストするチームもあるので、既定では arid に含めません。必要なら `--arid-call` で足してください。ログ出力そのものが役割のモジュールを解析するときは `--no-arid` を指定してください。
 
 ## 限界
 
@@ -81,4 +98,5 @@
 - Niedermayr, Juergens, Wagner (2016). Will My Tests Tell Me If I Break This Code? *CSED@ICSE*.
 - Vera-Pérez, Monperrus, Baudry (2018). Descartes: A PITest Engine to Detect Pseudo-Tested Methods. *ASE*.
 - Vera-Pérez, Danglot, Monperrus, Baudry (2019). A Comprehensive Study of Pseudo-tested Methods. *Empirical Software Engineering*.
+- Petrović, Ivanković (2018). State of Mutation Testing at Google. *ICSE-SEIP*.
 - Budd, Angluin (1982). Two Notions of Correctness and Their Relation to Testing. *Acta Informatica*.

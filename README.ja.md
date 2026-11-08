@@ -95,6 +95,8 @@ swift run swift-test-effectiveness /path/to/package
 | `--index-store-path <path>` | 静的参照 | 読み込むインデックスストア（パッケージではビルドが書き出すものが既定。カスタムモードでは必須） |
 | `--no-coverage` | カバレッジ | カバレッジを取得せず、後段の手法を全宣言に対して実行する |
 | `--throw-mutants` | 極端ミューテーション | 型指定なしの `throws` メソッドに `throw` するミュータントを追加 |
+| `--no-arid` | 極端ミューテーション | 本体がログ出力だけの `Void` メソッドも解析する（既定では対象外。[対象外](docs/ja/methods/extreme-mutation.md#対象外) を参照） |
+| `--arid-call <name>` | 極端ミューテーション | この関数の呼び出しもログ出力とみなす。例：`track`、`Analytics.shared.track`（複数可） |
 | `--timeout-factor`, `--minimum-timeout` | 極端ミューテーション | ミュータントごとのテスト実行のタイムアウト（ベースライン時間 × 係数、下限秒数） |
 
 終了コード：`0` 成功、`1` `--fail-on-pseudo-tested` に該当、`2` ビルド失敗やベースライン失敗など。

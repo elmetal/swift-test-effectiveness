@@ -21,7 +21,7 @@ The pipeline is a set of shared stages around a sequence of method layers, order
 | # | Stage | Kind | File |
 |---|---|---|---|
 | 1 | List source files: non-test targets from `swift package describe`, or `--source-dir` in custom mode; apply `--exclude` | shared | `Analyzer.swift` |
-| 2 | Discover declarations with SwiftSyntax and decide how each layer will analyse them (or why they are skipped); with `--since`, keep only declarations that overlap changed lines | shared | `MethodDiscovery.swift`, `MutationOperators.swift`, `GitDiff.swift` |
+| 2 | Discover declarations with SwiftSyntax and decide how each layer will analyse them (or why they are skipped, including bodies that only log: `AridDetection.swift`); with `--since`, keep only declarations that overlap changed lines | shared | `MethodDiscovery.swift`, `MutationOperators.swift`, `AridDetection.swift`, `GitDiff.swift` |
 | 3 | Copy the project to `<package>/.build/test-effectiveness/project` and prepare the copy for the layers that need it | shared | `Analyzer.swift`, `SchemataRewriter.swift` |
 | 4 | Build **once** (`swift build --build-tests --enable-code-coverage --enable-index-store`, or the custom build command) | shared | `Analyzer.swift` |
 | 5 | Static reference layer: read the build's index to fill the referenced column | layer | `References.swift` |

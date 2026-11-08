@@ -37,7 +37,7 @@ struct IntegrationTests {
             "Calculator.isEmpty": .partiallyTested,
             "Calculator.doubled(_:)": .tested,
         ])
-        #expect(report.skipped.map(\.method.name) == ["Calculator.pair()"])
+        #expect(report.skipped.map(\.method.name) == ["Calculator.dumpHistory()", "Calculator.pair()"])
         #expect(report.coverageAvailable)
         let executed = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.executed) })
         #expect(executed["Calculator.unused()"] == .notExecuted)

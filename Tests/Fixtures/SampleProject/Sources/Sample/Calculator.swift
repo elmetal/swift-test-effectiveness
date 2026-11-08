@@ -46,6 +46,11 @@ public final class Calculator {
         values.map { $0 * 2 }
     }
 
+    // only logs (arid) → reported as not analyzed, not as pseudo-tested.
+    public func dumpHistory() {
+        print(history)
+    }
+
     // unsupported return type → reported as not analyzed.
     public func pair() -> (Int, Int) {
         (1, 2)
