@@ -55,6 +55,14 @@ Partially tested (2)
 
 モックを注入したテストは、本物の実装を参照したことになりません。protocol 経由の呼び出しは、同じテスト（または XCTestCase や suite）が名前を出している具体型の実装にだけ数えます。
 
+## 動作要件
+
+- macOS 26 以降
+- Swift 6.2 以降（Xcode 26 以降）。動作確認は Swift 6.4（Xcode 27）で行っています。
+- 選択中の Xcode の macOS SDK に合った Swift ツールチェーン。swift.org や swiftly で入れたツールチェーンがその SDK より古いと、パッケージのマニフェストをコンパイルできません。`swift build` が `unknown argument: '-target-arch-variant'` を出してコンパイラがクラッシュします。この場合は Xcode のツールチェーンを使ってください（`xcrun swift`、または `xcode-select` が Xcode を指していれば `/usr/bin/swift`）。
+
+解析に使う `swift`（`--swift`）は対象プロジェクトのビルドとテストにも使い、インデックスもそのツールチェーンの `libIndexStore.dylib` で読みます。そのため、同じ条件が当てはまります。
+
 ## 使い方
 
 ### Swift Package
