@@ -130,6 +130,15 @@ struct ReporterTests {
         #expect(decoded.methods.first?.survivingMutants.map(\.mutant.mutation) == [.returnBool(true)])
     }
 
+    @Test func jsonCarriesSchemaAndToolVersion() throws {
+        let json = try Reporter.render(report, format: .json)
+        #expect(json.contains("\"schemaVersion\" : \(AnalysisReport.currentSchemaVersion)"))
+        #expect(json.contains("\"toolVersion\" : \"\(ToolVersion.current)\""))
+        let decoded = try JSONDecoder().decode(AnalysisReport.self, from: Data(json.utf8))
+        #expect(decoded.schemaVersion == AnalysisReport.currentSchemaVersion)
+        #expect(decoded.toolVersion == ToolVersion.current)
+    }
+
     private func pseudoTested(executed: ExecutionStatus, coverageAvailable: Bool) -> AnalysisReport {
         let method = MethodInfo(
             file: "Sources/A.swift", name: "Log.write(_:)", kind: .function,

@@ -49,17 +49,32 @@ A test that injects a mock does not count as a reference to the real implementat
 ## Requirements
 
 - macOS 26 or later
+- A git repository, for `--since` only
 - Swift 6.2 or later (Xcode 26 or later). Tested with Swift 6.4 (Xcode 27).
 - A Swift toolchain that matches the selected Xcode's macOS SDK. A swift.org or swiftly toolchain older than that SDK cannot compile package manifests: `swift build` fails with `unknown argument: '-target-arch-variant'` and a compiler crash. Use Xcode's toolchain instead (`xcrun swift`, or `/usr/bin/swift` when `xcode-select` points at Xcode).
 
 The `swift` that runs the analysis (`--swift`) also builds and tests the target project, and its `libIndexStore.dylib` reads the index, so the same applies to it.
+
+## Installation
+
+Build from source and put the binary on your `PATH`:
+
+```bash
+git clone https://github.com/elmetal/swift-test-effectiveness.git
+cd swift-test-effectiveness
+git checkout 0.0.1
+swift build -c release
+cp .build/release/swift-test-effectiveness /usr/local/bin/
+```
+
+Check the installed version with `swift-test-effectiveness --version`.
 
 ## Usage
 
 ### Swift packages
 
 ```bash
-swift run swift-test-effectiveness /path/to/package
+swift-test-effectiveness /path/to/package
 ```
 
 The project is copied to `<package>/.build/test-effectiveness` and analysed there, so your original sources are never modified. The test suite must first pass on the unmodified code (the baseline); otherwise the analysis stops. See [ARCHITECTURE.md](ARCHITECTURE.md#pipeline) for the pipeline.
@@ -74,7 +89,7 @@ The project is copied to `<package>/.build/test-effectiveness` and analysed ther
 | `--exclude <substring>` | Skip files whose path contains this string (repeatable) |
 | `--swift <path>` | The `swift` executable to use |
 | `--dry-run` | List what would be analysed, without building or running anything |
-| `--format text\|markdown\|json` | Report format (markdown is meant for PR comments) |
+| `--format text\|markdown\|json` | Report format (markdown is meant for PR comments; JSON is described below) |
 | `-o, --output <file>` | Write the report to a file |
 | `--fail-on-pseudo-tested` | Exit with status 1 if any method is pseudo-tested |
 
@@ -90,14 +105,16 @@ Options for a specific method:
 | `--arid-call <name>` | extreme mutation | Also treat calls to this function as logging, e.g. `track` or `Analytics.shared.track` (repeatable) |
 | `--timeout-factor`, `--minimum-timeout` | extreme mutation | Timeout for each mutant's test run (baseline duration × factor, with a minimum in seconds) |
 
-Exit status: `0` success, `1` pseudo-tested methods found with `--fail-on-pseudo-tested`, `2` analysis error (build failure, failing baseline, …).
+Exit status: `0` success, `1` pseudo-tested methods found with `--fail-on-pseudo-tested`, `2` analysis error (build failure, failing baseline, …), `128 + signal` when interrupted (`130` for Ctrl-C). On interruption the running build or test command is stopped as well.
+
+The JSON report starts with `schemaVersion` and `toolVersion`. `schemaVersion` is incremented when a field is removed, renamed or changes meaning; new fields may be added without changing it, so ignore keys you do not know.
 
 ### Xcode and other projects (custom mode)
 
 Pass `--source-dir`, `--build-command` and `--test-command` to use any build system. Commands run with `/bin/sh -c` inside the copied project.
 
 ```bash
-swift run swift-test-effectiveness /path/to/App \
+swift-test-effectiveness /path/to/App \
   --source-dir App \
   --build-command "xcodebuild build-for-testing -scheme App -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
   --test-command  "xcodebuild test-without-building -scheme App -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'"
@@ -110,7 +127,7 @@ Custom mode does not collect coverage, so methods that no test executes are repo
 ### In CI
 
 ```bash
-swift run swift-test-effectiveness . --since origin/main --format markdown -o effectiveness.md
+swift-test-effectiveness . --since origin/main --format markdown -o effectiveness.md
 ```
 
 Posting the generated Markdown as a PR comment shows, for the changed declarations only, what the tests are missing and how to fix it.
@@ -133,6 +150,7 @@ Posting the generated Markdown as a PR comment shows, for the changed declaratio
 
 ```bash
 swift test
+swift run swift-test-effectiveness /path/to/package
 ```
 
 Integration tests against the fixtures in `Tests/Fixtures` (slow):

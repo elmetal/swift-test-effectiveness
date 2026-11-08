@@ -14,7 +14,8 @@ struct SwiftTestEffectiveness: ParsableCommand {
 
         Swift packages are analyzed by default. For other projects (e.g. Xcode), pass \
         --source-dir, --build-command and --test-command.
-        """
+        """,
+        version: ToolVersion.current
     )
 
     @Argument(help: "Path to the project to analyze.")
@@ -99,6 +100,7 @@ struct SwiftTestEffectiveness: ParsableCommand {
     }
 
     func run() throws {
+        ProcessRunner.forwardTerminationSignals()
         let projectURL = URL(fileURLWithPath: projectPath).standardizedFileURL
         let buildSystem: AnalysisConfiguration.BuildSystem
         if let buildCommand, let testCommand {

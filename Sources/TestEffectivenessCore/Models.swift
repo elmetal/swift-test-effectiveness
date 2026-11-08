@@ -233,6 +233,14 @@ public struct SkippedMethod: Codable, Hashable, Sendable {
 }
 
 public struct AnalysisReport: Codable, Sendable {
+    /// Version of the JSON report format. Incremented when a field is removed, renamed or changes
+    /// meaning; adding a field does not change it.
+    public static let currentSchemaVersion = 1
+
+    /// The JSON format this report follows (see `currentSchemaVersion`).
+    public var schemaVersion: Int
+    /// Version of the tool that produced the report.
+    public var toolVersion: String
     public var projectPath: String
     public var coverageAvailable: Bool
     /// Whether the referenced column was computed from an index.
@@ -244,6 +252,8 @@ public struct AnalysisReport: Codable, Sendable {
         projectPath: String, coverageAvailable: Bool, referencesAvailable: Bool = false,
         methods: [MethodResult], skipped: [SkippedMethod]
     ) {
+        self.schemaVersion = Self.currentSchemaVersion
+        self.toolVersion = ToolVersion.current
         self.projectPath = projectPath
         self.coverageAvailable = coverageAvailable
         self.referencesAvailable = referencesAvailable
