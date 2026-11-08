@@ -47,6 +47,12 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Flag(help: "Also generate a `throw` mutant for methods declared with untyped `throws`.")
     var throwMutants = false
 
+    @Flag(inversion: .prefixedNo, help: "Skip methods returning Void whose body only logs (print, os_log, logger.info(…), …).")
+    var arid = true
+
+    @Option(name: .customLong("arid-call"), help: "Also treat calls to this function as logging, e.g. `track` or `Analytics.shared.track` (repeatable).")
+    var aridCalls: [String] = []
+
     @Flag(inversion: .prefixedNo, help: "Use code coverage to skip mutants of methods no test executes (SwiftPM only).")
     var coverage = true
 
@@ -107,7 +113,10 @@ struct SwiftTestEffectiveness: ParsableCommand {
             useCoverage: coverage,
             useIndex: index,
             indexStorePath: indexStorePath,
-            discovery: DiscoveryOptions(includeThrowMutants: throwMutants),
+            discovery: DiscoveryOptions(
+                includeThrowMutants: throwMutants,
+                arid: arid ? AridDetector(additionalCalls: aridCalls) : nil
+            ),
             changedSince: since,
             excludePathSubstrings: excludes,
             timeoutFactor: timeoutFactor,

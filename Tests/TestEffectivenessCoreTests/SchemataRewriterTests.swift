@@ -31,8 +31,8 @@ struct SchemataRewriterTests {
     }
 
     @Test func voidBodyUsesBareReturn() {
-        let output = rewrite("func log() { print(1) }")
-        #expect(output == "func log() { switch __steActiveMutant { case 1: return; default: break }; print(1) }\n")
+        let output = rewrite("func reset() { count = 0 }")
+        #expect(output == "func reset() { switch __steActiveMutant { case 1: return; default: break }; count = 0 }\n")
     }
 
     @Test func resultBuilderBodyIsWrappedInIfElse() {

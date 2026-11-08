@@ -27,9 +27,12 @@ public struct DiscoveredMethod: Sendable {
 public struct DiscoveryOptions: Sendable {
     /// Also generate a `throw` mutant for methods declared with untyped `throws`.
     public var includeThrowMutants: Bool
+    /// Skip methods returning `Void` whose body only logs (see `AridDetector`); `nil` disables it.
+    public var arid: AridDetector?
 
-    public init(includeThrowMutants: Bool = false) {
+    public init(includeThrowMutants: Bool = false, arid: AridDetector? = AridDetector()) {
         self.includeThrowMutants = includeThrowMutants
+        self.arid = arid
     }
 }
 
@@ -197,6 +200,11 @@ public enum MethodDiscovery {
                 decision = .skip(reason: "could not parse the body")
             } else {
                 decision = MutationOperators.mutations(for: returnType, isResultBuilder: isResultBuilder)
+                // Only the empty-body mutant is affected: any other mutant replaces a result,
+                // which tests should check whatever the body logs.
+                if case .mutate(let mutations) = decision, mutations == [.emptyBody], let arid = options.arid, arid.isArid(statements) {
+                    decision = .skip(reason: AridDetector.skipReason)
+                }
                 if case .mutate(var mutations) = decision, options.includeThrowMutants, canThrow, !isResultBuilder {
                     mutations.append(.throwError)
                     decision = .mutate(mutations)
