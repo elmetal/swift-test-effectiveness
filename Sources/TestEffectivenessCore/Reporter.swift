@@ -73,7 +73,7 @@ public enum Reporter {
     // MARK: - Text
 
     static func text(_ report: AnalysisReport) -> String {
-        var out = "Extreme mutation analysis of \(report.projectPath)\n"
+        var out = "Test effectiveness of \(report.projectPath)\n"
         if !report.coverageAvailable {
             out += "(coverage unavailable: uncovered methods, including ones in inactive `#if` blocks, are reported as pseudo-tested)\n"
         }
@@ -121,7 +121,7 @@ public enum Reporter {
     // MARK: - Markdown
 
     static func markdown(_ report: AnalysisReport) -> String {
-        var out = "# Extreme mutation analysis\n\n"
+        var out = "# Test effectiveness\n\n"
         let counts = sectionOrder.map { "\(title($0)): \(report.methods($0).count)" }
         out += counts.joined(separator: " · ") + " · Not analyzed: \(report.skipped.count)\n"
         if !report.coverageAvailable {

@@ -9,7 +9,7 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 | ターゲット | 役割 |
 |---|---|
 | `swift-test-effectiveness` | コマンドラインインターフェース（swift-argument-parser）。オプションを `AnalysisConfiguration` に変換し、レポートを出力する |
-| `TestEffectivenessCore` | 解析本体。ライブラリとしても使える |
+| `TestEffectivenessCore` | 解析本体。ライブラリの product としては公開しない（依存する `indexstore-db` を revision で固定しており、SwiftPM ではバージョン指定で依存されるパッケージにこれを含められないため） |
 | `TestEffectivenessCoreTests` | ユニットテストと、`Tests/Fixtures` に対する統合テスト |
 
 ## パイプライン

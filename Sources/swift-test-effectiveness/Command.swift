@@ -6,11 +6,13 @@ import TestEffectivenessCore
 struct SwiftTestEffectiveness: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "swift-test-effectiveness",
-        abstract: "Find pseudo-tested methods in a Swift project with extreme mutation analysis.",
+        abstract: "Report, per method, what a Swift project's tests are missing.",
         discussion: """
-        Each method body is replaced by the simplest possible behaviour for its return type \
-        (empty body, nil, true/false, 0/1, "", [] …). A method whose replacements are not \
-        detected by any test is pseudo-tested: tests execute it but do not check what it does.
+        For each method the report says whether any test refers to it (from the compiler's \
+        index), whether any test executes it (from code coverage) and whether any test checks \
+        what it does (from extreme mutation: the body is replaced by the simplest behaviour for \
+        its return type, such as an empty body, nil, true/false, 0/1, "" or []). A method that \
+        tests execute but whose replacements all pass the tests is pseudo-tested.
 
         Swift packages are analyzed by default. For other projects (e.g. Xcode), pass \
         --source-dir, --build-command and --test-command.

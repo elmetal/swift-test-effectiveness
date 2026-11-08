@@ -9,7 +9,7 @@ How swift-test-effectiveness is built. For what the tool reports and why, see [d
 | Target | Role |
 |---|---|
 | `swift-test-effectiveness` | command-line interface (swift-argument-parser); turns options into an `AnalysisConfiguration` and prints the report |
-| `TestEffectivenessCore` | the analysis itself, usable as a library |
+| `TestEffectivenessCore` | the analysis itself. Not a library product: its `indexstore-db` dependency is pinned to a revision, which SwiftPM does not allow in packages depended on by version |
 | `TestEffectivenessCoreTests` | unit tests, plus integration tests against `Tests/Fixtures` |
 
 ## Pipeline
