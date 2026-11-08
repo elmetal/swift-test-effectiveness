@@ -46,6 +46,14 @@ Each entry also carries the [referenced](docs/methods/static-references.md) colu
 
 A test that injects a mock does not count as a reference to the real implementations. Calls through a protocol count only for the concrete types that the same test (or XCTestCase, or suite) names.
 
+## Requirements
+
+- macOS 26 or later
+- Swift 6.2 or later (Xcode 26 or later). Tested with Swift 6.4 (Xcode 27).
+- A Swift toolchain that matches the selected Xcode's macOS SDK. A swift.org or swiftly toolchain older than that SDK cannot compile package manifests: `swift build` fails with `unknown argument: '-target-arch-variant'` and a compiler crash. Use Xcode's toolchain instead (`xcrun swift`, or `/usr/bin/swift` when `xcode-select` points at Xcode).
+
+The `swift` that runs the analysis (`--swift`) also builds and tests the target project, and its `libIndexStore.dylib` reads the index, so the same applies to it.
+
 ## Usage
 
 ### Swift packages
