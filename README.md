@@ -6,7 +6,7 @@ A tool that gives feedback on the effectiveness of a Swift project's test suite:
 
 Rather than a single score, it reports per declaration what the tests are missing (nothing executes it, nothing verifies what it does, …) and what to do about it.
 
-Currently it finds methods that no test executes, using coverage, and methods that tests execute but do not verify, using extreme mutation: each method body is replaced with the simplest behaviour for its return type (an empty body, `nil`, `true`/`false`, …), and a method for which every replacement still passes the tests is reported as **pseudo-tested**.
+Currently it reports, for each method, whether any test refers to it directly, using the compiler's index; methods that no test executes, using coverage; and methods that tests execute but do not verify, using extreme mutation: each method body is replaced with the simplest behaviour for its return type (an empty body, `nil`, `true`/`false`, …), and a method for which every replacement still passes the tests is reported as **pseudo-tested**.
 
 ```
 Pseudo-tested (2)
@@ -42,6 +42,10 @@ Declarations are grouped by what the tests are missing, and each entry says what
 | `tested` | nothing found | — | nothing |
 | *Not analyzed* | the method cannot be analysed (the reason is shown) | — | — |
 
+Each entry also carries the [referenced](docs/methods/static-references.md) column: whether a test refers to the method directly. The report adds a note where it changes the fix. A `pseudo-tested` method that no test calls directly needs a test of its own, not an assertion somewhere else. A `not-covered` method that a test does refer to points at a skipped test, an injected mock or dispatch to another type.
+
+A test that injects a mock does not count as a reference to the real implementations. Calls through a protocol count only for the concrete types that the same test (or XCTestCase, or suite) names.
+
 ## Usage
 
 ### Swift packages
@@ -70,6 +74,8 @@ Options for a specific method:
 
 | Option | Method | Description |
 |---|---|---|
+| `--no-index` | static references | Do not write or read the compiler's index; the referenced column is unknown |
+| `--index-store-path <path>` | static references | Index store to read (default for packages: the one the build writes; needed in custom mode) |
 | `--no-coverage` | coverage | Do not collect coverage; run the later methods on every declaration |
 | `--throw-mutants` | extreme mutation | Add a `throw` mutant for methods declared with untyped `throws` |
 | `--timeout-factor`, `--minimum-timeout` | extreme mutation | Timeout for each mutant's test run (baseline duration × factor, with a minimum in seconds) |
@@ -89,7 +95,7 @@ swift run swift-test-effectiveness /path/to/App \
 
 The test command is run once per mutant, with the active mutant exported as both `STE_MUTANT` and `TEST_RUNNER_STE_MUTANT` (`xcodebuild test` forwards `TEST_RUNNER_`-prefixed variables to the test process).
 
-Custom mode does not collect coverage, so methods that no test executes are reported as `pseudo-tested` rather than `not-covered`.
+Custom mode does not collect coverage, so methods that no test executes are reported as `pseudo-tested` rather than `not-covered`. For the referenced column, pass the index store your build writes with `--index-store-path` (see [Static test references](docs/methods/static-references.md#when-the-index-is-unavailable)).
 
 ### In CI
 
@@ -108,11 +114,10 @@ Posting the generated Markdown as a PR comment shows, for the changed declaratio
 
 - [Concepts](docs/concepts.md): what test effectiveness is, the PIE model, what "a missing test" means, the referenced / executed / verified columns, and why there is no score
 - Methods currently implemented
+  - [Static test references](docs/methods/static-references.md): fills the referenced column
   - [Coverage](docs/methods/coverage.md): fills the executed column
   - [Extreme mutation](docs/methods/extreme-mutation.md): fills the verified column
 - [ARCHITECTURE.md](ARCHITECTURE.md): the pipeline, how each method is implemented, and how to add one
-
-The referenced column (does any test call a declaration directly?) is not implemented yet.
 
 ## Development
 

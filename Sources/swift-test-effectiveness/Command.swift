@@ -50,6 +50,12 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Flag(inversion: .prefixedNo, help: "Use code coverage to skip mutants of methods no test executes (SwiftPM only).")
     var coverage = true
 
+    @Flag(inversion: .prefixedNo, help: "Read the compiler's index to report whether any test refers to each method directly.")
+    var index = true
+
+    @Option(help: "Index store for the referenced column; a relative path is resolved inside the copied project. SwiftPM: defaults to the one the build writes. Custom mode: required (e.g. build/Index.noindex/DataStore with -derivedDataPath build).")
+    var indexStorePath: String?
+
     @Option(help: "Directory for the mutated copy and logs (default: <project>/.build/test-effectiveness).")
     var workDir: String?
 
@@ -99,6 +105,8 @@ struct SwiftTestEffectiveness: ParsableCommand {
             workDirectory: workDir.map { URL(fileURLWithPath: $0) },
             buildSystem: buildSystem,
             useCoverage: coverage,
+            useIndex: index,
+            indexStorePath: indexStorePath,
             discovery: DiscoveryOptions(includeThrowMutants: throwMutants),
             changedSince: since,
             excludePathSubstrings: excludes,

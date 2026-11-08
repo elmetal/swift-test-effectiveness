@@ -42,6 +42,37 @@ struct IntegrationTests {
         let executed = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.executed) })
         #expect(executed["Calculator.unused()"] == .notExecuted)
         #expect(report.methods.filter { $0.method.name != "Calculator.unused()" }.allSatisfy { $0.executed == .executed })
+        #expect(report.referencesAvailable)
+        let referenced = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.referenced) })
+        #expect(referenced["Calculator.unused()"] == .notReferenced)
+        #expect(report.methods.filter { $0.method.name != "Calculator.unused()" }.allSatisfy { $0.referenced == .referenced })
+    }
+
+    /// The referenced column on `Tests/Fixtures/ReferencedProject`: protocol and class dispatch,
+    /// mock injection, a default implementation, setUp in the same XCTestCase.
+    @Test func referencedColumn() throws {
+        let report = try analyze("ReferencedProject")
+        #expect(report.referencesAvailable)
+        let referenced = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.referenced) })
+        #expect(referenced == [
+            "Repository.count()": .referenced,
+            "SQLRepository.fetch(id:)": .referenced,
+            "RemoteRepository.fetch(id:)": .notReferenced,
+            "RemoteRepository.count()": .notReferenced,
+            "UserService.name(of:)": .referenced,
+            "UserService.normalized(_:)": .notReferenced,
+            "UserService.isReady": .referenced,
+            "Shape.area()": .referenced,
+            "Square.area()": .referenced,
+            "Circle.area()": .notReferenced,
+            "Format.percent(_:)": .referenced,
+            "Format.clamped(_:)": .notReferenced,
+        ])
+        let executed = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.executed) })
+        // Referenced through the base type, but dispatch always reaches Square.area.
+        #expect(executed["Shape.area()"] == .notExecuted)
+        // Executed (and verified) only through Format.percent.
+        #expect(executed["Format.clamped(_:)"] == .executed)
     }
 
     /// The schema of every construct in `Tests/Fixtures/EdgeCases` must compile and the baseline must pass.

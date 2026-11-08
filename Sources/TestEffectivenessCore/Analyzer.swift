@@ -37,6 +37,12 @@ public struct AnalysisConfiguration: Sendable {
     public var workDirectory: URL
     public var buildSystem: BuildSystem
     public var useCoverage: Bool
+    /// Fill the referenced column from the compiler's index.
+    public var useIndex: Bool
+    /// Index store to read. A relative path is resolved inside the copied project, where the build
+    /// runs. SwiftPM: defaults to the one `swift build --enable-index-store` writes. Custom mode:
+    /// required for the referenced column (e.g. `<derivedDataPath>/Index.noindex/DataStore`).
+    public var indexStorePath: String?
     public var discovery: DiscoveryOptions
     public var changedSince: String?
     public var excludePathSubstrings: [String]
@@ -48,6 +54,8 @@ public struct AnalysisConfiguration: Sendable {
         workDirectory: URL? = nil,
         buildSystem: BuildSystem,
         useCoverage: Bool = true,
+        useIndex: Bool = true,
+        indexStorePath: String? = nil,
         discovery: DiscoveryOptions = .init(),
         changedSince: String? = nil,
         excludePathSubstrings: [String] = [],
@@ -59,6 +67,8 @@ public struct AnalysisConfiguration: Sendable {
             ?? projectPath.appendingPathComponent(".build/test-effectiveness")).standardizedFileURL
         self.buildSystem = buildSystem
         self.useCoverage = useCoverage
+        self.useIndex = useIndex
+        self.indexStorePath = indexStorePath
         self.discovery = discovery
         self.changedSince = changedSince
         self.excludePathSubstrings = excludePathSubstrings
@@ -72,6 +82,8 @@ public struct AnalysisConfiguration: Sendable {
 public final class Analyzer: @unchecked Sendable {
     public let configuration: AnalysisConfiguration
     private let log: @Sendable (String) -> Void
+    /// Relative paths of the production sources found by the last `plan()`.
+    private var productionFiles: [String] = []
 
     public init(configuration: AnalysisConfiguration, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.configuration = configuration
@@ -85,6 +97,7 @@ public final class Analyzer: @unchecked Sendable {
     public func plan() throws -> (methods: [DiscoveredMethod], skipped: [SkippedMethod]) {
         let files = try sourceFiles()
         guard !files.isEmpty else { throw AnalysisError.noSources }
+        productionFiles = files
         let changed = try configuration.changedSince.map {
             try ChangedLines.load(since: $0, in: configuration.projectPath)
         }
@@ -130,6 +143,7 @@ public final class Analyzer: @unchecked Sendable {
 
         try prepareWorkspace(assignments)
         try build()
+        let references = loadReferences(methods.map(\.info))
         let (baselineDuration, coverage) = try runBaseline()
         let timeout = max(baselineDuration * configuration.timeoutFactor, configuration.minimumTimeout)
         log(String(format: "Baseline passed in %.1fs; per-mutant timeout %.0fs.", baselineDuration, timeout))
@@ -160,6 +174,7 @@ public final class Analyzer: @unchecked Sendable {
             }
             results.append(MethodResult(
                 method: method.info,
+                referenced: references?[method.info] ?? .unknown,
                 executed: ExecutionStatus.resolve(coverage: reached, mutants: mutantResults),
                 classification: Classifier.classify(mutantResults),
                 mutants: mutantResults
@@ -169,6 +184,7 @@ public final class Analyzer: @unchecked Sendable {
         return AnalysisReport(
             projectPath: configuration.projectPath.path,
             coverageAvailable: coverage != nil,
+            referencesAvailable: references != nil,
             methods: results,
             skipped: skipped
         )
@@ -279,6 +295,7 @@ public final class Analyzer: @unchecked Sendable {
         case .swiftPM(let swift, _, _):
             var arguments = [swift, "build", "--build-tests"]
             if configuration.useCoverage { arguments.append("--enable-code-coverage") }
+            if configuration.useIndex { arguments.append("--enable-index-store") }
             result = try ProcessRunner.run(arguments, in: copyRoot, logFile: logFile)
         case .custom(_, let buildCommand, _):
             result = try ProcessRunner.runShell(buildCommand, in: copyRoot, logFile: logFile)
@@ -287,6 +304,54 @@ public final class Analyzer: @unchecked Sendable {
             throw AnalysisError.buildFailed(log: logFile, tail: Self.tail(result.output))
         }
     }
+
+    // MARK: - References
+
+    /// The referenced column, or `nil` when no index is available. Never fails the analysis.
+    private func loadReferences(_ methods: [MethodInfo]) -> [MethodInfo: ReferenceStatus]? {
+        guard configuration.useIndex else { return nil }
+        let swift: String
+        let store: URL
+        switch configuration.buildSystem {
+        case .swiftPM(let executable, _, _):
+            swift = executable
+            if let path = configuration.indexStorePath {
+                store = URL(fileURLWithPath: path, relativeTo: copyRoot).standardizedFileURL
+            } else {
+                guard let result = try? ProcessRunner.run([swift, "build", "--show-bin-path"], in: copyRoot),
+                      result.exitCode == 0,
+                      let binPath = result.output.split(separator: "\n").last
+                else {
+                    log("Could not locate the index store; the referenced column is unavailable.")
+                    return nil
+                }
+                store = URL(fileURLWithPath: binPath.trimmingCharacters(in: .whitespaces))
+                    .appendingPathComponent("index/store")
+            }
+        case .custom:
+            guard let path = configuration.indexStorePath else { return nil }
+            swift = "swift"
+            store = URL(fileURLWithPath: path, relativeTo: copyRoot).standardizedFileURL
+        }
+        guard let library = ReferenceColumn.libraryPath(swift: swift) else {
+            log("libIndexStore not found next to `\(swift)`; the referenced column is unavailable.")
+            return nil
+        }
+        do {
+            let result = try ReferenceColumn.compute(
+                storePath: store, libraryPath: library,
+                databasePath: configuration.workDirectory.appendingPathComponent("index-db"),
+                projectRoot: copyRoot, productionFiles: Set(productionFiles), methods: methods
+            )
+            log("Read test references from \(store.path).")
+            return result
+        } catch {
+            log("\(error); the referenced column is unavailable.")
+            return nil
+        }
+    }
+
+    // MARK: - Baseline
 
     private func runBaseline() throws -> (Double, CoverageMap?) {
         let logFile = logDirectory.appendingPathComponent("baseline.log")
