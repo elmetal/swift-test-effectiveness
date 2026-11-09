@@ -8,20 +8,23 @@ import Foundation
 struct Progress {
     let total: Int
     private let initialEstimate: Double
+    /// Runs that execute at once; the remaining time divides by it.
+    private let parallelism: Int
     private var started = 0
     private var finishedCount = 0
     private var finishedDuration = 0.0
 
-    init(total: Int, initialEstimate: Double) {
+    init(total: Int, initialEstimate: Double, parallelism: Int = 1) {
         self.total = total
         self.initialEstimate = initialEstimate
+        self.parallelism = max(1, parallelism)
     }
 
     /// The line to show when the next run starts.
     mutating func next(_ description: String) -> String {
         started += 1
         let average = finishedCount > 0 ? finishedDuration / Double(finishedCount) : initialEstimate
-        let remaining = average * Double(total - started + 1)
+        let remaining = average * Double(total - started + 1) / Double(parallelism)
         return "[\(started)/\(total)] \(description) (about \(Self.format(remaining)) left)"
     }
 

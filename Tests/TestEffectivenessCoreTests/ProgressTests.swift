@@ -13,6 +13,12 @@ struct ProgressTests {
         #expect(progress.next("A.h(): `return 0`") == "[3/3] A.h(): `return 0` (about 30s left)")
     }
 
+    @Test func remainingTimeDividesByParallelRuns() {
+        var progress = Progress(total: 8, initialEstimate: 10, parallelism: 4)
+        // 8 runs × 10s on 4 workers.
+        #expect(progress.next("A.f(): empty body") == "[1/8] A.f(): empty body (about 20s left)")
+    }
+
     @Test func formatsDurations() {
         #expect(Progress.format(0) == "0s")
         #expect(Progress.format(44.6) == "45s")

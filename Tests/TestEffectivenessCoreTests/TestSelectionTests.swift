@@ -39,4 +39,13 @@ struct TestSelectionTests {
     @Test func quotesForTheShell() {
         #expect(TestSelection.shellQuoted("a'b") == "'a'\\''b'")
     }
+
+    @Test func expandsJobAndResultBundle() {
+        let command = "xcodebuild test-without-building -destination 'name=STE-{job}' -resultBundlePath {result-bundle} {only-testing}"
+        let expanded = CommandTemplate.expand(
+            command, tests: [suite], job: 3, resultBundle: URL(fileURLWithPath: "/w/results/mutant-7.xcresult")
+        )
+        #expect(expanded == "xcodebuild test-without-building -destination 'name=STE-3' "
+            + "-resultBundlePath '/w/results/mutant-7.xcresult' '-only-testing:AppTests/StoreTests'")
+    }
 }

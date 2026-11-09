@@ -70,6 +70,10 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 
 ミュータントごとに、`STE_MUTANT=<id> swift test --skip-build`（またはカスタムのテストコマンド）をタイムアウト付きで実行します。タイムアウトはベースラインの所要時間 × `--timeout-factor`（下限 `--minimum-timeout` 秒）です。ミュータント実行時のプロファイルデータは別ファイルに書き出すので、ベースラインのカバレッジを上書きしません。
 
+#### 並列実行
+
+カスタムモードでは、`Analyzer.runMutants` がミュータントを `--jobs` 個のワーカーで流します（`DispatchQueue.concurrentPerform`）。各ワーカーは `Mutex` で守った共有のインデックスから次のミュータントを取り、結果は元の位置に戻すので、レポートは実行順に左右されません。`CommandTemplate` は `{job}` をワーカーの番号に、`{result-bundle}` を `<作業ディレクトリ>/results/<ログ名>.xcresult` に置き換えます。このパスは実行前に削除し、ベースラインのもの以外は実行後にも削除します。エラーが起きたら、ワーカーはそれ以上ミュータントを取りません。SwiftPM では `swift test` が `.build` をロックするため、常に 1 つずつ流します。
+
 #### テスト選択
 
 `TestSelection.swift`。静的参照の層がインデックスを読むとき、`ReferenceColumn` は各テストスコープからの呼び出しを本番コードの中まで辿り（`ReferenceResolver.referencedSymbols(scope:throughProductionCode:)`。動的な呼び出しはスコープに限った RTA で同じように解決します）、メソッドごとに、そこに届くスコープを `TestSelector` として記録します。モジュール名はインデックスから、型名や関数名は `TestScopeFinder` から取ります。

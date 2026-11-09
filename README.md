@@ -105,6 +105,7 @@ Options for a specific method:
 | `--throw-mutants` | extreme mutation | Add a `throw` mutant for methods declared with untyped `throws` |
 | `--no-arid` | extreme mutation | Also mutate methods returning `Void` whose body only logs (skipped by default, see [Not targeted](docs/methods/extreme-mutation.md#not-targeted)) |
 | `--arid-call <name>` | extreme mutation | Also treat calls to this function as logging, e.g. `track` or `Analytics.shared.track` (repeatable) |
+| `--jobs <n>` | extreme mutation | Custom mode: run this many test commands at once (see [Parallel runs](#parallel-runs)) |
 | `--timeout-factor`, `--minimum-timeout` | extreme mutation | Timeout for each mutant's test run (baseline duration × factor, with a minimum in seconds) |
 | `--no-test-selection` | extreme mutation | Run the whole test suite for every mutant instead of [the tests that reach its method first](#test-selection) |
 
@@ -131,7 +132,7 @@ The other methods need files that the build and the test run write. Build into a
 swift-test-effectiveness /path/to/App \
   --source-dir App \
   --build-command "xcodebuild build-for-testing -scheme App -derivedDataPath build -enableCodeCoverage YES -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
-  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
+  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
   --index-store-path build/Index.noindex/DataStore \
   --coverage-profdata build/Build/ProfileData \
   --coverage-binary build/Build/Products
@@ -139,6 +140,7 @@ swift-test-effectiveness /path/to/App \
 
 - `--index-store-path`: the referenced column (see [Static test references](docs/methods/static-references.md#when-the-index-is-unavailable)) and [test selection](#test-selection).
 - `{only-testing}`: [test selection](#test-selection).
+- `-collect-test-diagnostics never`: most mutants make a test fail, and by default xcodebuild then collects diagnostics, which made a failing run take 39s instead of 5s in our measurements.
 - `-enableCodeCoverage YES`, `--coverage-profdata` and `--coverage-binary`: the executed column. After the baseline, the tool reads the newest `.profdata` the baseline wrote and exports the coverage of every Mach-O binary under `--coverage-binary` with `xcrun llvm-cov export`; binaries without coverage data are skipped. Without coverage, methods that no test executes are reported as `pseudo-tested` rather than `not-covered`, and their mutants run.
 
 ### Test selection
@@ -149,6 +151,26 @@ Each mutant run executes the test suite, so a large suite makes the analysis slo
 - It needs the index. SwiftPM: on by default, but not with `--test-filter`. Custom mode: on when the test command contains `{only-testing}`, which is replaced with `'-only-testing:<module>/<Type>'` and `'-only-testing:<module>/<function>()'` arguments (and with nothing when the whole suite runs).
 - Before the mutants, every selectable test runs once without mutations. If that fails, each test module is tried on its own and a module that still fails is never selected (for example a target the scheme does not contain, or a target whose name differs from its module name). The logs are `selection-check*.log`.
 - At the end the log shows how many mutants the selected tests detected and how many re-ran the whole suite.
+
+### Parallel runs
+
+In custom mode, `--jobs <n>` runs up to `n` test commands at once, each mutant on the next free worker. Two placeholders keep the runs apart:
+
+- `{job}` becomes the worker's number, `1` to `n`. A simulator runs one test session at a time, so give each worker its own, e.g. clones named `STE-1` … `STE-n`.
+- `{result-bundle}` becomes a fresh path for the run's result bundle. xcodebuild names its default bundles by the second a run starts, so runs that start together collide; it also refuses a path that exists.
+
+```bash
+for n in 1 2 3 4; do xcrun simctl clone "iPhone 17" "STE-$n"; done
+
+swift-test-effectiveness /path/to/App \
+  --jobs 4 \
+  --test-command "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -destination 'platform=iOS Simulator,name=STE-{job},OS=26.2' -resultBundlePath {result-bundle} {only-testing}" \
+  …
+```
+
+The baseline and the check run for test selection run alone, as worker 1. Result bundles go to `<work dir>/results`; only the baseline's is kept. Timeouts still use the baseline duration, which was measured without other runs; on a loaded machine raise `--timeout-factor`.
+
+`--jobs` is custom mode only: `swift test` locks `.build`, so its runs cannot overlap.
 
 ### In CI
 
@@ -161,7 +183,7 @@ Posting the generated Markdown as a PR comment shows, for the changed declaratio
 ### Known limitations
 
 - The project is analysed in a copy, so local path dependencies (`.package(path: "../Foo")`) do not resolve.
-- `swift test` locks `.build`, so the test runs (one per mutant) cannot run in parallel.
+- `swift test` locks `.build`, so for Swift packages the test runs (one per mutant) cannot run in parallel. Custom mode can, with [`--jobs`](#parallel-runs).
 - With test selection, a test that passes only after other tests have run (shared state, order dependence) can fail among the selected tests and make a mutant look detected. Use `--no-test-selection` for such a suite.
 
 ## Documentation
