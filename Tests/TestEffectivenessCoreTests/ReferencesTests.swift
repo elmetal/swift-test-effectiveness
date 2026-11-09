@@ -52,6 +52,14 @@ struct TestScopeFinderTests {
         // Mocks and helpers are test code, but not tests: they are reached only through a test.
         #expect(byName["Mock"] == nil)
         #expect(!scopes.contains { $0.name.hasSuffix("helper") })
+
+        // How a test runner selects each scope.
+        let free = scopes.first { $0.name.hasSuffix("freeFunction") }
+        #expect(free?.testName == "freeFunction")
+        #expect(free?.isFunction == true)
+        let store = scopes.first { $0.name == "StoreTests" }
+        #expect(store?.testName == "StoreTests")
+        #expect(store?.isFunction == false)
     }
 }
 
@@ -212,6 +220,24 @@ struct ReferenceResolverTests {
         #expect(!result.contains("Remote.fetch"))
     }
 
+    @Test func selectionFollowsProductionCode() {
+        var index = Self.storeIndex()
+        // SQL.fetch calls Remote.fetch, which calls Shape.area through Square.
+        index.add("Remote.fetch", .instanceMethod, [.reference, .call], at: Self.source, line: 8,
+                  [(.containedBy, "SQL.fetch", .instanceMethod)])
+        index.add("Square", .class, [.reference], at: Self.source, line: 11,
+                  [(.containedBy, "Remote.fetch", .instanceMethod)])
+        index.add("Shape.area", .instanceMethod, [.reference, .call, .dynamic], at: Self.source, line: 11,
+                  [(.containedBy, "Remote.fetch", .instanceMethod)])
+        call(&index, "SQL.fetch", line: 10)
+        let resolver = ReferenceResolver(index: index, testFiles: [Self.tests], projectRoots: ["/p/"])
+        let scope = TestScope(name: "T", ranges: [.init(path: Self.tests, lines: 10...10)])
+        let result = resolver.referencedSymbols(scope: scope, throughProductionCode: true)
+        #expect(result.isSuperset(of: ["SQL.fetch", "Remote.fetch", "Square.area"]))
+        #expect(!result.contains("Circle.area"))
+        #expect(resolver.moduleName(of: scope) == "M")
+    }
+
     @Test func columnMapsMethodsByDeclarationLine() {
         let index = Self.storeIndex()
         let method = { (line: Int) in
@@ -226,8 +252,8 @@ struct ReferenceResolverTests {
             productionFiles: ["Sources/Store.swift"], methods: [method(8), method(11), method(99)]
         )
         // No test file on disk, so no scope refers to anything; line 99 declares nothing.
-        #expect(column[method(8)] == .notReferenced)
-        #expect(column[method(11)] == .notReferenced)
-        #expect(column[method(99)] == .unknown)
+        #expect(column.status[method(8)] == .notReferenced)
+        #expect(column.status[method(11)] == .notReferenced)
+        #expect(column.status[method(99)] == .unknown)
     }
 }

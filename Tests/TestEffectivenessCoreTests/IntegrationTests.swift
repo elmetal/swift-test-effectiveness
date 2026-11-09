@@ -12,16 +12,20 @@ struct IntegrationTests {
         .appendingPathComponent("Fixtures")
     static let swift = ProcessInfo.processInfo.environment["STE_SWIFT"] ?? "swift"
 
-    private func analyze(_ fixture: String, throwMutants: Bool = false) throws -> AnalysisReport {
+    private func analyze(
+        _ fixture: String, throwMutants: Bool = false, testSelection: Bool = true,
+        log: @escaping @Sendable (String) -> Void = { _ in }
+    ) throws -> AnalysisReport {
         let project = Self.fixturesRoot.appendingPathComponent(fixture)
         let configuration = AnalysisConfiguration(
             projectPath: project,
             workDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("ste-it-\(fixture)"),
             buildSystem: .swiftPM(swiftExecutable: Self.swift, targets: [], testFilter: nil),
             discovery: DiscoveryOptions(includeThrowMutants: throwMutants),
-            minimumTimeout: 120
+            minimumTimeout: 120,
+            testSelection: testSelection
         )
-        return try Analyzer(configuration: configuration).run()
+        return try Analyzer(configuration: configuration, log: log).run()
     }
 
     @Test func sampleProjectClassification() throws {
@@ -75,6 +79,21 @@ struct IntegrationTests {
         #expect(executed["Format.clamped(_:)"] == .executed)
     }
 
+    /// Test selection only changes which tests run first: the outcomes match running the whole
+    /// suite for every mutant.
+    @Test func testSelectionKeepsOutcomes() throws {
+        let messages = Messages()
+        let selected = try analyze("ReferencedProject") { messages.append($0) }
+        let whole = try analyze("ReferencedProject", testSelection: false)
+        func outcomes(_ report: AnalysisReport) -> [String: [MutantOutcome]] {
+            Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.mutants.map(\.outcome)) })
+        }
+        #expect(outcomes(selected) == outcomes(whole))
+        let summary = messages.all.first { $0.hasPrefix("Test selection:") }
+        #expect(summary != nil)
+        #expect(summary?.hasPrefix("Test selection: 0 mutants detected") == false)
+    }
+
     /// The schema of every construct in `Tests/Fixtures/EdgeCases` must compile and the baseline must pass.
     @Test func edgeCasesCompile() throws {
         let report = try analyze("EdgeCases", throwMutants: true)
@@ -86,4 +105,15 @@ struct IntegrationTests {
         // `#if DEBUG` is active in a debug build and must still be analysed.
         #expect(report.methods.contains { $0.method.name.hasSuffix(".debugOnly()") })
     }
+}
+
+final class Messages: @unchecked Sendable {
+    private let lock = NSLock()
+    private var messages: [String] = []
+
+    func append(_ message: String) {
+        lock.withLock { messages.append(message) }
+    }
+
+    var all: [String] { lock.withLock { messages } }
 }

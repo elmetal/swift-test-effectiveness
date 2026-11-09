@@ -113,6 +113,7 @@ swift-test-effectiveness /path/to/package
 | `--no-arid` | 極端ミューテーション | 本体がログ出力だけの `Void` メソッドも解析する（既定では対象外。[対象外](docs/ja/methods/extreme-mutation.md#対象外) を参照） |
 | `--arid-call <name>` | 極端ミューテーション | この関数の呼び出しもログ出力とみなす。例：`track`、`Analytics.shared.track`（複数可） |
 | `--timeout-factor`, `--minimum-timeout` | 極端ミューテーション | ミュータントごとのテスト実行のタイムアウト（ベースライン時間 × 係数、下限秒数） |
+| `--no-test-selection` | 極端ミューテーション | [メソッドに届くテストを先に流す](#テスト選択) のをやめ、ミュータントごとに常に全テストを流す |
 
 終了コード：`0` 成功、`1` `--fail-on-pseudo-tested` に該当、`2` ビルド失敗やベースライン失敗など、`128 + シグナル番号` 中断（Ctrl-C なら `130`）。中断したときは、実行中のビルドやテストのコマンドも止めます。
 
@@ -131,7 +132,26 @@ swift-test-effectiveness /path/to/App \
 
 テストコマンドはミュータントごとに実行され、アクティブなミュータントは `STE_MUTANT` と `TEST_RUNNER_STE_MUTANT` の両方で渡されます（`xcodebuild test` は `TEST_RUNNER_` 付きの環境変数をテストプロセスに転送します）。
 
+各ミュータントで、まずメソッドに届くテストだけを流すには、xcodebuild の `-only-testing:` 引数を置く位置に `{only-testing}` を書き、インデックスストアを渡します（[テスト選択](#テスト選択) を参照）。
+
+```bash
+swift-test-effectiveness /path/to/App \
+  --source-dir App \
+  --build-command "xcodebuild build-for-testing -scheme App -derivedDataPath build -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
+  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
+  --index-store-path build/Index.noindex/DataStore
+```
+
 カスタムモードではカバレッジを取得しないため、テストから実行されないメソッドは `not-covered` ではなく `pseudo-tested` として報告されます。referenced 列を出すには、ビルドが書き出すインデックスストアを `--index-store-path` で渡します（[テストからの静的な参照](docs/ja/methods/static-references.md#インデックスが使えないとき) を参照）。
+
+### テスト選択
+
+ミュータントごとにテストを流すので、テストが多いと解析に時間がかかります。そこでツールは、各ミュータントについてまずそのメソッドを実行しうるテストだけを流し、それをすり抜けたミュータントについてだけ全テストを流します。選んだテストで失敗するテストは全テストでも失敗するので、結果は毎回全テストを流した場合と同じで、変わるのは時間だけです。多くのミュータントは選んだテストで検出されます。
+
+- 選ぶテストは、コンパイラのインデックス上でメソッドのシンボルに届くテストスコープ（XCTestCase のサブクラス、スイート、トップレベルの `@Test` 関数）です。テストヘルパーと本番コードの中の呼び出しも辿ります。どのテストも届かないメソッドと、すべてのテストが届くメソッドは、最初から全テストを流します。
+- インデックスが必要です。SwiftPM では既定で有効です（`--test-filter` を指定した場合は無効）。カスタムモードでは、テストコマンドに `{only-testing}` があるときに有効になります。`{only-testing}` は `'-only-testing:<モジュール>/<型>'` と `'-only-testing:<モジュール>/<関数>()'` に置き換わります（全テストを流すときは空になります）。
+- ミュータントを流す前に、選びうるテストすべてをミューテーションなしで 1 回流します。これが失敗した場合は、テストモジュールごとに試し、それでも失敗するモジュールは選びません（スキームに含まれないターゲット、モジュール名とターゲット名が違うターゲットなど）。ログは `selection-check*.log` です。
+- 最後に、選んだテストで検出できたミュータントの数と、全テストを流し直したミュータントの数をログに出します。
 
 ### CI での例
 
@@ -145,6 +165,7 @@ swift-test-effectiveness . --since origin/main --format markdown -o effectivenes
 
 - プロジェクトを作業ディレクトリにコピーして解析するため、相対パスのローカル依存（`.package(path: "../Foo")`）は解決できない。
 - `swift test` は `.build` をロックするため、テストの実行（ミュータントごとに 1 回）を並列化できない。
+- テスト選択では、ほかのテストを先に流さないと通らないテスト（状態の共有、実行順への依存）が選んだテストの中で失敗し、ミュータントが検出されたように見えることがある。そのようなテストスイートでは `--no-test-selection` を使う。
 
 ## ドキュメント
 
