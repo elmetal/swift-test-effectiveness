@@ -92,6 +92,28 @@ struct IntegrationTests {
         let summary = messages.all.first { $0.hasPrefix("Test selection:") }
         #expect(summary != nil)
         #expect(summary?.hasPrefix("Test selection: 0 mutants detected") == false)
+        #expect(selected.testsFailingAlone == [])
+        #expect(whole.testsFailingAlone == nil)
+    }
+
+    /// `Tests/Fixtures/OrderDependentProject`: `LookupTests` passes only after another test has
+    /// registered a name. It is reported, and not selected, so `Registry.summary()`, which only it
+    /// reaches, keeps the outcomes of the whole suite instead of looking detected.
+    @Test func testsFailingAloneAreReportedAndNotSelected() throws {
+        let messages = Messages()
+        let selected = try analyze("OrderDependentProject") { messages.append($0) }
+        let whole = try analyze("OrderDependentProject", testSelection: false)
+        func outcomes(_ report: AnalysisReport) -> [String: [MutantOutcome]] {
+            Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.mutants.map(\.outcome)) })
+        }
+        #expect(outcomes(selected) == outcomes(whole))
+        let classification = Dictionary(uniqueKeysWithValues: selected.methods.map { ($0.method.name, $0.classification) })
+        #expect(classification["Registry.summary()"] == .pseudoTested)
+        #expect(selected.testsFailingAlone?.map(\.test) == ["RegistryTests/LookupTests"])
+        #expect(selected.testsFailingAlone?.first?.timedOut == false)
+        #expect(messages.all.contains { $0.hasPrefix("Test isolation: 1 test scope fails alone") })
+        let text = try Reporter.render(selected, format: .text)
+        #expect(text.contains("Tests that fail alone (1)"))
     }
 
     /// Custom mode with xcodebuild: coverage from the profile the baseline writes, the index the
@@ -126,6 +148,8 @@ struct IntegrationTests {
         let classification = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.classification) })
         #expect(classification["RemoteRepository.count()"] == .notCovered)
         #expect(classification["Format.percent(_:)"] == .tested)
+        // Each scope ran alone on the two workers.
+        #expect(report.testsFailingAlone == [])
         #expect(messages.all.contains { $0.hasPrefix("Test selection:") && !$0.hasPrefix("Test selection: 0 mutants detected") })
     }
 

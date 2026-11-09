@@ -232,6 +232,23 @@ public struct SkippedMethod: Codable, Hashable, Sendable {
     }
 }
 
+/// A test scope that passes in the whole suite but fails when run on its own, without mutations:
+/// it depends on tests that run before it, or shares state with them.
+public struct TestFailingAlone: Codable, Hashable, Sendable {
+    /// The scope as `xcodebuild -only-testing` names it: `Target/Type` or `Target/function()`.
+    public var test: String
+    /// Whether the run hit the timeout instead of failing.
+    public var timedOut: Bool
+    /// Log of the run.
+    public var log: String
+
+    public init(test: String, timedOut: Bool, log: String) {
+        self.test = test
+        self.timedOut = timedOut
+        self.log = log
+    }
+}
+
 public struct AnalysisReport: Codable, Sendable {
     /// Version of the JSON report format. Incremented when a field is removed, renamed or changes
     /// meaning; adding a field does not change it.
@@ -247,10 +264,13 @@ public struct AnalysisReport: Codable, Sendable {
     public var referencesAvailable: Bool
     public var methods: [MethodResult]
     public var skipped: [SkippedMethod]
+    /// Test scopes that fail when run on their own without mutations. `nil` when the check did not
+    /// run (it runs only with test selection).
+    public var testsFailingAlone: [TestFailingAlone]?
 
     public init(
         projectPath: String, coverageAvailable: Bool, referencesAvailable: Bool = false,
-        methods: [MethodResult], skipped: [SkippedMethod]
+        methods: [MethodResult], skipped: [SkippedMethod], testsFailingAlone: [TestFailingAlone]? = nil
     ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.toolVersion = ToolVersion.current
@@ -259,6 +279,7 @@ public struct AnalysisReport: Codable, Sendable {
         self.referencesAvailable = referencesAvailable
         self.methods = methods
         self.skipped = skipped
+        self.testsFailingAlone = testsFailingAlone
     }
 
     public func methods(_ classification: MethodClassification) -> [MethodResult] {

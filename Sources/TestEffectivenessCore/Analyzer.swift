@@ -171,7 +171,7 @@ public final class Analyzer: @unchecked Sendable {
         let (baselineDuration, coverage) = try runBaseline()
         let timeout = max(baselineDuration * configuration.timeoutFactor, configuration.minimumTimeout)
         log(String(format: "Baseline passed in %.1fs; per-mutant timeout %.0fs.", baselineDuration, timeout))
-        let selectable = try selectableTests(references, timeout: timeout)
+        let (selectable, testsFailingAlone) = try selectableTests(references, timeout: timeout)
 
         // Decide up front which mutants run, so that progress can show the total.
         var planned: [(method: DiscoveredMethod, mutants: [Mutant], reached: Bool?)] = []
@@ -245,7 +245,8 @@ public final class Analyzer: @unchecked Sendable {
             coverageAvailable: coverage != nil,
             referencesAvailable: references != nil,
             methods: results,
-            skipped: skipped
+            skipped: skipped,
+            testsFailingAlone: testsFailingAlone
         )
     }
 
@@ -533,13 +534,25 @@ public final class Analyzer: @unchecked Sendable {
     /// the scheme cannot run (`xcodebuild` then fails), or a test depends on tests outside the
     /// selection; either would make a mutant look detected. A module whose selection fails on its
     /// own is never selected.
-    private func selectableTests(_ references: ReferenceAnalysis?, timeout: Double) throws -> Set<TestSelector>? {
-        guard selectionRequested, let references else { return nil }
+    ///
+    /// Each remaining scope then runs alone (see `scopesFailingAlone`); a scope that fails is not
+    /// selected either and is returned for the report.
+    private func selectableTests(
+        _ references: ReferenceAnalysis?, timeout: Double
+    ) throws -> (Set<TestSelector>?, [TestFailingAlone]?) {
+        guard selectionRequested, let references else { return (nil, nil) }
         let all = references.allTests
         guard !all.isEmpty else {
             log("Test selection: no test scopes found in the index; running the whole suite for every mutant.")
-            return nil
+            return (nil, nil)
         }
+        guard let selectable = try selectableModules(all, timeout: timeout) else { return (nil, nil) }
+        let failing = try scopesFailingAlone(selectable, timeout: timeout)
+        let remaining = selectable.subtracting(failing.map(\.selector))
+        return (remaining.isEmpty ? nil : remaining, failing.map(\.report))
+    }
+
+    private func selectableModules(_ all: Set<TestSelector>, timeout: Double) throws -> Set<TestSelector>? {
         log("Checking that the \(all.count) test scopes can be selected…")
         let check = try executeTests(
             all.sorted(), mutant: nil, timeout: timeout,
@@ -563,6 +576,66 @@ public final class Analyzer: @unchecked Sendable {
         log("Test selection: selecting tests of \(dropped.joined(separator: ", ")) fails without mutations "
             + "(see selection-check-*.log); mutants reached only by them run the whole suite.")
         return selectable.isEmpty ? nil : selectable
+    }
+
+    /// Runs each scope on its own, without mutations, on the mutant workers. A scope that passes
+    /// with the others but fails alone depends on tests that run before it or shares state with
+    /// them; selected alone, it would make a mutant look detected. One run per scope; a single
+    /// scope already ran alone in `selectableModules`.
+    private func scopesFailingAlone(
+        _ scopes: Set<TestSelector>, timeout: Double
+    ) throws -> [(selector: TestSelector, report: TestFailingAlone)] {
+        guard scopes.count > 1 else { return [] }
+        let ordered = scopes.sorted()
+        log("Running each of the \(ordered.count) test scopes alone without mutations "
+            + "(\(ordered.count) runs\(jobs > 1 ? " on \(jobs) jobs" : ""))…")
+        let start = Date()
+        struct State {
+            var next = 0
+            var failures: [Int: TestFailingAlone] = [:]
+            var error: (any Error)?
+        }
+        let state = Mutex(State())
+        DispatchQueue.concurrentPerform(iterations: min(jobs, ordered.count)) { worker in
+            while true {
+                let taken: Int? = state.withLock { state in
+                    guard state.error == nil, state.next < ordered.count else { return nil }
+                    defer { state.next += 1 }
+                    return state.next
+                }
+                guard let taken else { return }
+                let scope = ordered[taken]
+                let logFile = logDirectory.appendingPathComponent("isolation-\(taken + 1).log")
+                do {
+                    let result = try executeTests(
+                        [scope], mutant: nil, timeout: timeout, job: worker + 1, logFile: logFile
+                    )
+                    guard result.timedOut || result.exitCode != 0 else { continue }
+                    let failure = TestFailingAlone(
+                        test: scope.onlyTestingIdentifier, timedOut: result.timedOut, log: logFile.path
+                    )
+                    state.withLock { $0.failures[taken] = failure }
+                } catch {
+                    state.withLock { state in
+                        if state.error == nil { state.error = error }
+                    }
+                    return
+                }
+            }
+        }
+        let failures = try state.withLock { state in
+            if let error = state.error { throw error }
+            return state.failures.sorted { $0.key < $1.key }.map { (ordered[$0.key], $0.value) }
+        }
+        let elapsed = String(format: "%.1fs", Date().timeIntervalSince(start))
+        if failures.isEmpty {
+            log("Test isolation: every test scope passes alone (checked in \(elapsed)).")
+        } else {
+            log("Test isolation: \(failures.count) test \(failures.count == 1 ? "scope fails" : "scopes fail") "
+                + "alone without mutations and \(failures.count == 1 ? "is" : "are") not selected: "
+                + failures.map(\.1.test).joined(separator: ", ") + " (checked in \(elapsed)).")
+        }
+        return failures
     }
 
     // MARK: - Mutants

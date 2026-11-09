@@ -255,6 +255,55 @@ struct ReporterTests {
         let withoutIndex = AnalysisReport(projectPath: "/p", coverageAvailable: true, methods: [], skipped: [])
         #expect(try Reporter.render(withoutIndex, format: format).lowercased().contains("no index store"))
     }
+
+    private func withTestsFailingAlone(_ tests: [TestFailingAlone]?) -> AnalysisReport {
+        var report = report
+        report.testsFailingAlone = tests
+        return report
+    }
+
+    private let failingAlone = [
+        TestFailingAlone(test: "AppTests/LookupTests", timedOut: false, log: "/w/logs/isolation-1.log"),
+        TestFailingAlone(test: "AppTests/slow()", timedOut: true, log: "/w/logs/isolation-2.log"),
+    ]
+
+    @Test(arguments: [ReportFormat.text, .markdown])
+    func reportsTestsFailingAloneInTheirOwnSection(_ format: ReportFormat) throws {
+        let rendered = try Reporter.render(withTestsFailingAlone(failingAlone), format: format)
+        #expect(rendered.contains("\(Reporter.testsFailingAloneTitle)"))
+        #expect(rendered.contains("depend on tests that run before them"))
+        #expect(rendered.contains("AppTests/LookupTests"))
+        #expect(rendered.contains("/w/logs/isolation-1.log"))
+        #expect(rendered.contains("timed out"))
+        // A section of its own, after the per-declaration findings.
+        let section = try #require(rendered.range(of: Reporter.testsFailingAloneTitle))
+        let method = try #require(rendered.range(of: "Calc.isPositive(_:)"))
+        #expect(method.lowerBound < section.lowerBound)
+        #expect(!rendered[section.lowerBound...].contains("Calc.isPositive(_:)"))
+    }
+
+    @Test(arguments: [ReportFormat.text, .markdown])
+    func omitsTheSectionWhenEveryTestPassesAloneOrTheCheckDidNotRun(_ format: ReportFormat) throws {
+        for tests in [[], nil] as [[TestFailingAlone]?] {
+            let rendered = try Reporter.render(withTestsFailingAlone(tests), format: format)
+            #expect(!rendered.contains(Reporter.testsFailingAloneTitle))
+        }
+    }
+
+    @Test func jsonCarriesTestsFailingAlone() throws {
+        let json = try Reporter.render(withTestsFailingAlone(failingAlone), format: .json)
+        #expect(json.contains("\"testsFailingAlone\""))
+        let decoded = try JSONDecoder().decode(AnalysisReport.self, from: Data(json.utf8))
+        #expect(decoded.testsFailingAlone == failingAlone)
+        #expect(decoded.schemaVersion == 1)
+
+        // Not checked: the field is absent, and reports without it still decode.
+        let unchecked = try Reporter.render(withTestsFailingAlone(nil), format: .json)
+        #expect(!unchecked.contains("testsFailingAlone"))
+        #expect(try JSONDecoder().decode(AnalysisReport.self, from: Data(unchecked.utf8)).testsFailingAlone == nil)
+        let checked = try Reporter.render(withTestsFailingAlone([]), format: .json)
+        #expect(checked.contains("\"testsFailingAlone\" : ["))
+    }
 }
 
 struct ExecutionStatusTests {
