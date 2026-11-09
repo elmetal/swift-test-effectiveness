@@ -95,23 +95,25 @@ struct IntegrationTests {
     }
 
     /// Custom mode with xcodebuild: coverage from the profile the baseline writes, the index the
-    /// build writes, and test selection through `{only-testing}`.
+    /// build writes, test selection through `{only-testing}`, and two jobs with a result bundle
+    /// per run.
     @Test func customModeWithXcodebuild() throws {
         let project = Self.fixturesRoot.appendingPathComponent("ReferencedProject")
         let xcodebuild = "-scheme ReferencedProject-Package -destination platform=macOS "
-            + "-derivedDataPath build -enableCodeCoverage YES -quiet"
+            + "-derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -quiet"
         let configuration = AnalysisConfiguration(
             projectPath: project,
             workDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("ste-it-custom"),
             buildSystem: .custom(
                 sourceDirectories: ["Sources"],
                 buildCommand: "xcodebuild build-for-testing \(xcodebuild)",
-                testCommand: "xcodebuild test-without-building \(xcodebuild) {only-testing}"
+                testCommand: "xcodebuild test-without-building \(xcodebuild) -resultBundlePath {result-bundle} {only-testing}"
             ),
             indexStorePath: "build/Index.noindex/DataStore",
             coverageProfilePath: "build/Build/ProfileData",
             coverageBinaryPaths: ["build/Build/Products"],
-            minimumTimeout: 120
+            minimumTimeout: 120,
+            jobs: 2
         )
         let messages = Messages()
         let report = try Analyzer(configuration: configuration) { messages.append($0) }.run()

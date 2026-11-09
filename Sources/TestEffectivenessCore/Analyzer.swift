@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 public enum AnalysisError: Error, CustomStringConvertible {
     case packageDescription(String)
@@ -60,6 +61,9 @@ public struct AnalysisConfiguration: Sendable {
     /// the index; SwiftPM: not with a test filter; custom mode: only with `{only-testing}` in the
     /// test command.
     public var testSelection: Bool
+    /// Custom mode: how many test runs execute at once. Each worker's command gets its number for
+    /// `{job}` (see `CommandTemplate`).
+    public var jobs: Int
 
     public init(
         projectPath: URL,
@@ -75,7 +79,8 @@ public struct AnalysisConfiguration: Sendable {
         excludePathSubstrings: [String] = [],
         timeoutFactor: Double = 3,
         minimumTimeout: Double = 30,
-        testSelection: Bool = true
+        testSelection: Bool = true,
+        jobs: Int = 1
     ) {
         self.projectPath = projectPath.standardizedFileURL
         self.workDirectory = (workDirectory
@@ -92,6 +97,7 @@ public struct AnalysisConfiguration: Sendable {
         self.timeoutFactor = timeoutFactor
         self.minimumTimeout = minimumTimeout
         self.testSelection = testSelection
+        self.jobs = max(1, jobs)
     }
 }
 
@@ -183,39 +189,49 @@ public final class Analyzer: @unchecked Sendable {
             }
             planned.append((method, mutants, reached))
         }
-        var progress = Progress(
-            total: planned.filter { $0.reached != false }.reduce(0) { $0 + $1.mutants.count },
-            initialEstimate: baselineDuration
-        )
-        log("Running \(progress.total) mutants.")
+        let total = planned.filter { $0.reached != false }.reduce(0) { $0 + $1.mutants.count }
+        log("Running \(total) mutants\(jobs > 1 ? " with \(jobs) jobs" : "").")
+        if jobs > 1, case .custom(_, _, let testCommand) = configuration.buildSystem {
+            if !testCommand.contains(CommandTemplate.job) {
+                log("Warning: --test-command has no {job}, so every job uses the same destination.")
+            }
+            if testCommand.contains("xcodebuild") && !testCommand.contains(CommandTemplate.resultBundle) {
+                log("Warning: xcodebuild runs that start in the same second share a result bundle; "
+                    + "pass -resultBundlePath {result-bundle}.")
+            }
+        }
 
-        var results: [MethodResult] = []
-        var statistics = SelectionStatistics()
-        for (method, mutants, reached) in planned {
+        // Every mutant that runs, in order; the results go back into the same positions.
+        var outcomes: [[MutantResult?]] = planned.map { method, mutants, reached in
+            mutants.map { reached == false ? MutantResult(mutant: $0, outcome: .notRun) : nil }
+        }
+        var work: [MutantRun] = []
+        for (methodIndex, (method, mutants, reached)) in planned.enumerated() where reached != false {
             let tests = selectable.flatMap { all in
                 TestSelection.tests(
                     reaching: references?.reachingTests[method.info].map { $0.intersection(all) }, all: all
                 )
             }
-            var mutantResults: [MutantResult] = []
-            for mutant in mutants {
-                if reached == false {
-                    mutantResults.append(MutantResult(mutant: mutant, outcome: .notRun))
-                    continue
-                }
-                let selected = tests.map { " [\($0.count) selected test \($0.count == 1 ? "scope" : "scopes")]" } ?? ""
-                log(progress.next("\(method.info.name): \(mutant.mutation.summary)\(selected)"))
-                let result = try runMutant(mutant, tests: tests, timeout: timeout, statistics: &statistics)
-                progress.finished(duration: result.duration ?? 0)
-                mutantResults.append(result)
+            for (mutantIndex, mutant) in mutants.enumerated() {
+                work.append(MutantRun(
+                    method: methodIndex, index: mutantIndex, mutant: mutant, tests: tests, name: method.info.name
+                ))
             }
-            results.append(MethodResult(
-                method: method.info,
-                referenced: references?.status[method.info] ?? .unknown,
-                executed: ExecutionStatus.resolve(coverage: reached, mutants: mutantResults),
+        }
+        let (finished, statistics) = try runMutants(work, timeout: timeout, initialEstimate: baselineDuration)
+        for (run, result) in zip(work, finished) {
+            outcomes[run.method][run.index] = result
+        }
+
+        let results = zip(planned, outcomes).map { plan, outcomes in
+            let mutantResults = outcomes.map { $0! }
+            return MethodResult(
+                method: plan.method.info,
+                referenced: references?.status[plan.method.info] ?? .unknown,
+                executed: ExecutionStatus.resolve(coverage: plan.reached, mutants: mutantResults),
                 classification: Classifier.classify(mutantResults),
                 mutants: mutantResults
-            ))
+            )
         }
 
         if selectable != nil {
@@ -306,6 +322,8 @@ public final class Analyzer: @unchecked Sendable {
         try fileManager.createDirectory(at: copyRoot, withIntermediateDirectories: true)
         try? fileManager.removeItem(at: logDirectory)
         try fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        try? fileManager.removeItem(at: resultBundleDirectory)
+        try fileManager.createDirectory(at: resultBundleDirectory, withIntermediateDirectories: true)
 
         // Keep the copy's `.build` so later runs build incrementally and reuse dependency checkouts.
         for item in try fileManager.contentsOfDirectory(atPath: copyRoot.path) where item != ".build" {
@@ -419,12 +437,10 @@ public final class Analyzer: @unchecked Sendable {
             }
             guard configuration.useCoverage else { return (result.duration, nil) }
             return (result.duration, loadCoverage(swift: swift))
-        case .custom(_, _, let testCommand):
+        case .custom:
             // Coverage files are at least as new as the baseline; older ones are left over.
             let start = Date().addingTimeInterval(-1)
-            let result = try ProcessRunner.runShell(
-                TestSelection.expand(testCommand, tests: nil), in: copyRoot, logFile: logFile
-            )
+            let result = try executeTests(nil, mutant: nil, timeout: nil, logFile: logFile, keepResultBundle: true)
             guard result.exitCode == 0 else {
                 throw AnalysisError.baselineFailed(log: logFile, tail: Self.tail(result.output))
             }
@@ -503,6 +519,12 @@ public final class Analyzer: @unchecked Sendable {
         var decidedBySelection = 0
         var reran = 0
         var wholeSuite = 0
+
+        mutating func add(_ other: SelectionStatistics) {
+            decidedBySelection += other.decidedBySelection
+            reran += other.reran
+            wholeSuite += other.wholeSuite
+        }
     }
 
     /// The tests that may be selected, or `nil` to run the whole suite for every mutant.
@@ -545,14 +567,80 @@ public final class Analyzer: @unchecked Sendable {
 
     // MARK: - Mutants
 
+    private var jobs: Int {
+        if case .custom = configuration.buildSystem { return configuration.jobs }
+        return 1
+    }
+
+    struct MutantRun {
+        var method: Int
+        var index: Int
+        var mutant: Mutant
+        var tests: [TestSelector]?
+        var name: String
+    }
+
+    /// Runs `work` on `jobs` workers, each taking the next mutant when it is free. Returns the
+    /// results in the order of `work`. The first error stops the workers from taking more mutants.
+    private func runMutants(
+        _ work: [MutantRun], timeout: Double, initialEstimate: Double
+    ) throws -> ([MutantResult], SelectionStatistics) {
+        struct State {
+            var next = 0
+            var results: [MutantResult?]
+            var statistics = SelectionStatistics()
+            var progress: Progress
+            var error: (any Error)?
+        }
+        let state = Mutex(State(
+            results: Array(repeating: nil, count: work.count),
+            progress: Progress(total: work.count, initialEstimate: initialEstimate, parallelism: jobs)
+        ))
+        DispatchQueue.concurrentPerform(iterations: jobs) { worker in
+            while true {
+                let taken: Int? = state.withLock { state in
+                    guard state.error == nil, state.next < work.count else { return nil }
+                    defer { state.next += 1 }
+                    let run = work[state.next]
+                    let selected = run.tests.map { " [\($0.count) selected test \($0.count == 1 ? "scope" : "scopes")]" } ?? ""
+                    log(state.progress.next("\(run.name): \(run.mutant.mutation.summary)\(selected)"))
+                    return state.next
+                }
+                guard let taken else { return }
+                let run = work[taken]
+                do {
+                    var statistics = SelectionStatistics()
+                    let result = try runMutant(
+                        run.mutant, tests: run.tests, timeout: timeout, job: worker + 1, statistics: &statistics
+                    )
+                    state.withLock { state in
+                        state.results[taken] = result
+                        state.statistics.add(statistics)
+                        state.progress.finished(duration: result.duration ?? 0)
+                    }
+                } catch {
+                    state.withLock { state in
+                        if state.error == nil { state.error = error }
+                    }
+                    return
+                }
+            }
+        }
+        return try state.withLock { state in
+            if let error = state.error { throw error }
+            return (state.results.map { $0! }, state.statistics)
+        }
+    }
+
     /// Runs the selected tests first, if any, and the whole suite when the mutant survives them.
     private func runMutant(
-        _ mutant: Mutant, tests: [TestSelector]?, timeout: Double, statistics: inout SelectionStatistics
+        _ mutant: Mutant, tests: [TestSelector]?, timeout: Double, job: Int,
+        statistics: inout SelectionStatistics
     ) throws -> MutantResult {
         var duration = 0.0
         if let tests {
             let selected = try executeTests(
-                tests, mutant: mutant, timeout: timeout,
+                tests, mutant: mutant, timeout: timeout, job: job,
                 logFile: logDirectory.appendingPathComponent("mutant-\(mutant.id)-selected.log")
             )
             duration += selected.duration
@@ -565,7 +653,7 @@ public final class Analyzer: @unchecked Sendable {
             statistics.wholeSuite += 1
         }
         let result = try executeTests(
-            nil, mutant: mutant, timeout: timeout,
+            nil, mutant: mutant, timeout: timeout, job: job,
             logFile: logDirectory.appendingPathComponent("mutant-\(mutant.id).log")
         )
         duration += result.duration
@@ -576,9 +664,10 @@ public final class Analyzer: @unchecked Sendable {
         result.timedOut ? .timedOut : (result.exitCode == 0 ? .survived : .killed)
     }
 
-    /// Runs `tests` (`nil`: the whole suite) with `mutant` active (`nil`: none).
+    /// Runs `tests` (`nil`: the whole suite) with `mutant` active (`nil`: none) as worker `job`.
     private func executeTests(
-        _ tests: [TestSelector]?, mutant: Mutant?, timeout: Double, logFile: URL
+        _ tests: [TestSelector]?, mutant: Mutant?, timeout: Double?, job: Int = 1, logFile: URL,
+        keepResultBundle: Bool = false
     ) throws -> ProcessResult {
         var environment: [String: String] = [:]
         if let mutant {
@@ -595,12 +684,19 @@ public final class Analyzer: @unchecked Sendable {
                 arguments, in: copyRoot, environment: environment, timeout: timeout, logFile: logFile
             )
         case .custom(_, _, let testCommand):
+            // Named after the log, so each run gets a path of its own.
+            let resultBundle = resultBundleDirectory
+                .appendingPathComponent(logFile.deletingPathExtension().lastPathComponent + ".xcresult")
+            try? FileManager.default.removeItem(at: resultBundle)
+            defer { if !keepResultBundle { try? FileManager.default.removeItem(at: resultBundle) } }
             return try ProcessRunner.runShell(
-                TestSelection.expand(testCommand, tests: tests), in: copyRoot,
-                environment: environment, timeout: timeout, logFile: logFile
+                CommandTemplate.expand(testCommand, tests: tests, job: job, resultBundle: resultBundle),
+                in: copyRoot, environment: environment, timeout: timeout, logFile: logFile
             )
         }
     }
+
+    private var resultBundleDirectory: URL { configuration.workDirectory.appendingPathComponent("results") }
 
     private func testArguments(swift: String, filter: String?) -> [String] {
         var arguments = [swift, "test", "--skip-build"]

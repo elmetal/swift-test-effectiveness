@@ -59,6 +59,10 @@ In custom mode, the baseline's test command writes the profile (`xcodebuild -ena
 
 Each mutant run executes `STE_MUTANT=<id> swift test --skip-build` (or the custom test command) with a timeout of the baseline duration × `--timeout-factor`, with `--minimum-timeout` seconds as the minimum. Mutant runs write their profile data to a separate file, so they do not overwrite the baseline coverage.
 
+#### Parallel runs
+
+In custom mode, `Analyzer.runMutants` runs the mutants on `--jobs` workers (`DispatchQueue.concurrentPerform`); each worker takes the next mutant from a shared index under a `Mutex`, and results go back to their positions, so the report does not depend on scheduling. `CommandTemplate` replaces `{job}` with the worker's number and `{result-bundle}` with `<work dir>/results/<log name>.xcresult`, removed before the run and, except for the baseline's, after it. The first error stops the workers from taking more mutants. SwiftPM always runs one at a time, because `swift test` locks `.build`.
+
 #### Test selection
 
 `TestSelection.swift`. When the static reference layer reads the index, `ReferenceColumn` also follows each test scope's calls through production code (`ReferenceResolver.referencedSymbols(scope:throughProductionCode:)`, with the same scope-restricted RTA for dynamic calls) and records, per method, the scopes that reach it as `TestSelector`s (the module from the index, the type or function name from `TestScopeFinder`).

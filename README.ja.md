@@ -114,6 +114,7 @@ swift-test-effectiveness /path/to/package
 | `--throw-mutants` | 極端ミューテーション | 型指定なしの `throws` メソッドに `throw` するミュータントを追加 |
 | `--no-arid` | 極端ミューテーション | 本体がログ出力だけの `Void` メソッドも解析する（既定では対象外。[対象外](docs/ja/methods/extreme-mutation.md#対象外) を参照） |
 | `--arid-call <name>` | 極端ミューテーション | この関数の呼び出しもログ出力とみなす。例：`track`、`Analytics.shared.track`（複数可） |
+| `--jobs <n>` | 極端ミューテーション | カスタムモード：同時に流すテストコマンドの数（[並列実行](#並列実行) を参照） |
 | `--timeout-factor`, `--minimum-timeout` | 極端ミューテーション | ミュータントごとのテスト実行のタイムアウト（ベースライン時間 × 係数、下限秒数） |
 | `--no-test-selection` | 極端ミューテーション | [メソッドに届くテストを先に流す](#テスト選択) のをやめ、ミュータントごとに常に全テストを流す |
 
@@ -140,7 +141,7 @@ swift-test-effectiveness /path/to/App \
 swift-test-effectiveness /path/to/App \
   --source-dir App \
   --build-command "xcodebuild build-for-testing -scheme App -derivedDataPath build -enableCodeCoverage YES -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
-  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
+  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
   --index-store-path build/Index.noindex/DataStore \
   --coverage-profdata build/Build/ProfileData \
   --coverage-binary build/Build/Products
@@ -148,6 +149,7 @@ swift-test-effectiveness /path/to/App \
 
 - `--index-store-path`：referenced 列（[テストからの静的な参照](docs/ja/methods/static-references.md#インデックスが使えないとき) を参照）と [テスト選択](#テスト選択) に使います。
 - `{only-testing}`：[テスト選択](#テスト選択) に使います。
+- `-collect-test-diagnostics never`：ほとんどのミュータントはテストを失敗させます。xcodebuild は既定でそのたびに診断情報を集めるので、手元の計測では失敗する実行が 5 秒ではなく 39 秒かかりました。
 - `-enableCodeCoverage YES`、`--coverage-profdata`、`--coverage-binary`：executed 列に使います。ベースラインの後、ベースラインが書き出した最新の `.profdata` を読み、`--coverage-binary` の下にある Mach-O バイナリそれぞれのカバレッジを `xcrun llvm-cov export` で取り出します。カバレッジデータのないバイナリは飛ばします。カバレッジがないと、どのテストも実行しないメソッドは `not-covered` ではなく `pseudo-tested` として報告され、そのミュータントも流れます。
 
 ### テスト選択
@@ -158,6 +160,26 @@ swift-test-effectiveness /path/to/App \
 - インデックスが必要です。SwiftPM では既定で有効です（`--test-filter` を指定した場合は無効）。カスタムモードでは、テストコマンドに `{only-testing}` があるときに有効になります。`{only-testing}` は `'-only-testing:<モジュール>/<型>'` と `'-only-testing:<モジュール>/<関数>()'` に置き換わります（全テストを流すときは空になります）。
 - ミュータントを流す前に、選びうるテストすべてをミューテーションなしで 1 回流します。これが失敗した場合は、テストモジュールごとに試し、それでも失敗するモジュールは選びません（スキームに含まれないターゲット、モジュール名とターゲット名が違うターゲットなど）。ログは `selection-check*.log` です。
 - 最後に、選んだテストで検出できたミュータントの数と、全テストを流し直したミュータントの数をログに出します。
+
+### 並列実行
+
+カスタムモードでは、`--jobs <n>` で最大 `n` 個のテストコマンドを同時に流します。各ミュータントは、空いたワーカーが順に受け持ちます。実行どうしがぶつからないよう、プレースホルダが 2 つあります。
+
+- `{job}` はワーカーの番号（`1`〜`n`）に置き換わります。シミュレータは一度に 1 つのテストしか流せないので、ワーカーごとに別のシミュレータを使います（例：`STE-1`〜`STE-n` という名前のクローン）。
+- `{result-bundle}` は、その実行用の新しい result bundle のパスに置き換わります。xcodebuild は既定の result bundle に実行開始の秒で名前を付けるので、同時に始まった実行どうしがぶつかります。既存のパスも受け付けません。
+
+```bash
+for n in 1 2 3 4; do xcrun simctl clone "iPhone 17" "STE-$n"; done
+
+swift-test-effectiveness /path/to/App \
+  --jobs 4 \
+  --test-command "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -destination 'platform=iOS Simulator,name=STE-{job},OS=26.2' -resultBundlePath {result-bundle} {only-testing}" \
+  …
+```
+
+ベースラインとテスト選択の事前チェックは、ワーカー 1 として単独で流します。result bundle は `<作業ディレクトリ>/results` に書き出し、ベースラインのものだけ残します。タイムアウトはほかの実行がない状態で測ったベースラインの時間をもとにするので、マシンの負荷が高いときは `--timeout-factor` を上げてください。
+
+`--jobs` はカスタムモード専用です。`swift test` は `.build` をロックするため、実行を重ねられません。
 
 ### CI での例
 
@@ -170,7 +192,7 @@ swift-test-effectiveness . --since origin/main --format markdown -o effectivenes
 ### 既知の制限
 
 - プロジェクトを作業ディレクトリにコピーして解析するため、相対パスのローカル依存（`.package(path: "../Foo")`）は解決できない。
-- `swift test` は `.build` をロックするため、テストの実行（ミュータントごとに 1 回）を並列化できない。
+- `swift test` は `.build` をロックするため、Swift パッケージではテストの実行（ミュータントごとに 1 回）を並列化できない。カスタムモードでは [`--jobs`](#並列実行) で並列化できる。
 - テスト選択では、ほかのテストを先に流さないと通らないテスト（状態の共有、実行順への依存）が選んだテストの中で失敗し、ミュータントが検出されたように見えることがある。そのようなテストスイートでは `--no-test-selection` を使う。
 
 ## ドキュメント
