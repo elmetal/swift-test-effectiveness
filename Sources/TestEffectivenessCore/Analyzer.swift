@@ -148,8 +148,8 @@ public final class Analyzer: @unchecked Sendable {
         let timeout = max(baselineDuration * configuration.timeoutFactor, configuration.minimumTimeout)
         log(String(format: "Baseline passed in %.1fs; per-mutant timeout %.0fs.", baselineDuration, timeout))
 
-        var results: [MethodResult] = []
-        var executed = 0
+        // Decide up front which mutants run, so that progress can show the total.
+        var planned: [(method: DiscoveredMethod, mutants: [Mutant], reached: Bool?)] = []
         for (method, mutants) in assignments {
             let reached = coverage?.wasExecuted(
                 file: copyRoot.appendingPathComponent(method.info.file).path,
@@ -162,15 +162,26 @@ public final class Analyzer: @unchecked Sendable {
                 skipped.append(SkippedMethod(method: method.info, reason: Self.notCompiledReason))
                 continue
             }
+            planned.append((method, mutants, reached))
+        }
+        var progress = Progress(
+            total: planned.filter { $0.reached != false }.reduce(0) { $0 + $1.mutants.count },
+            initialEstimate: baselineDuration
+        )
+        log("Running \(progress.total) mutants.")
+
+        var results: [MethodResult] = []
+        for (method, mutants, reached) in planned {
             var mutantResults: [MutantResult] = []
             for mutant in mutants {
                 if reached == false {
                     mutantResults.append(MutantResult(mutant: mutant, outcome: .notRun))
                     continue
                 }
-                executed += 1
-                log("[\(executed)] \(method.info.name): \(mutant.mutation.summary)")
-                mutantResults.append(try runMutant(mutant, timeout: timeout))
+                log(progress.next("\(method.info.name): \(mutant.mutation.summary)"))
+                let result = try runMutant(mutant, timeout: timeout)
+                progress.finished(duration: result.duration ?? 0)
+                mutantResults.append(result)
             }
             results.append(MethodResult(
                 method: method.info,
