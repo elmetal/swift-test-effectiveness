@@ -104,6 +104,7 @@ Options for a specific method:
 | `--no-arid` | extreme mutation | Also mutate methods returning `Void` whose body only logs (skipped by default, see [Not targeted](docs/methods/extreme-mutation.md#not-targeted)) |
 | `--arid-call <name>` | extreme mutation | Also treat calls to this function as logging, e.g. `track` or `Analytics.shared.track` (repeatable) |
 | `--timeout-factor`, `--minimum-timeout` | extreme mutation | Timeout for each mutant's test run (baseline duration × factor, with a minimum in seconds) |
+| `--no-test-selection` | extreme mutation | Run the whole test suite for every mutant instead of [the tests that reach its method first](#test-selection) |
 
 Exit status: `0` success, `1` pseudo-tested methods found with `--fail-on-pseudo-tested`, `2` analysis error (build failure, failing baseline, …), `128 + signal` when interrupted (`130` for Ctrl-C). On interruption the running build or test command is stopped as well.
 
@@ -122,7 +123,26 @@ swift-test-effectiveness /path/to/App \
 
 The test command is run once per mutant, with the active mutant exported as both `STE_MUTANT` and `TEST_RUNNER_STE_MUTANT` (`xcodebuild test` forwards `TEST_RUNNER_`-prefixed variables to the test process).
 
+To run each mutant against only the tests that reach its method first, put `{only-testing}` where xcodebuild's `-only-testing:` arguments go, and pass the index store (see [Test selection](#test-selection)):
+
+```bash
+swift-test-effectiveness /path/to/App \
+  --source-dir App \
+  --build-command "xcodebuild build-for-testing -scheme App -derivedDataPath build -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
+  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
+  --index-store-path build/Index.noindex/DataStore
+```
+
 Custom mode does not collect coverage, so methods that no test executes are reported as `pseudo-tested` rather than `not-covered`. For the referenced column, pass the index store your build writes with `--index-store-path` (see [Static test references](docs/methods/static-references.md#when-the-index-is-unavailable)).
+
+### Test selection
+
+Each mutant run executes the test suite, so a large suite makes the analysis slow. The tool therefore first runs each mutant against the tests that may execute its method, and runs the whole suite only for a mutant that survives them. A test that fails among the selected tests also fails in the whole suite, so the results are the same as running the whole suite every time; only the time changes. Most mutants are detected by the selected tests.
+
+- The selected tests are the test scopes (XCTestCase subclasses, suites, free `@Test` functions) that reach one of the method's symbols in the compiler's index, following calls through test helpers and production code. A method that no test reaches, or that every test reaches, runs the whole suite directly.
+- It needs the index. SwiftPM: on by default, but not with `--test-filter`. Custom mode: on when the test command contains `{only-testing}`, which is replaced with `'-only-testing:<module>/<Type>'` and `'-only-testing:<module>/<function>()'` arguments (and with nothing when the whole suite runs).
+- Before the mutants, every selectable test runs once without mutations. If that fails, each test module is tried on its own and a module that still fails is never selected (for example a target the scheme does not contain, or a target whose name differs from its module name). The logs are `selection-check*.log`.
+- At the end the log shows how many mutants the selected tests detected and how many re-ran the whole suite.
 
 ### In CI
 
@@ -136,6 +156,7 @@ Posting the generated Markdown as a PR comment shows, for the changed declaratio
 
 - The project is analysed in a copy, so local path dependencies (`.package(path: "../Foo")`) do not resolve.
 - `swift test` locks `.build`, so the test runs (one per mutant) cannot run in parallel.
+- With test selection, a test that passes only after other tests have run (shared state, order dependence) can fail among the selected tests and make a mutant look detected. Use `--no-test-selection` for such a suite.
 
 ## Documentation
 

@@ -57,6 +57,14 @@ The baseline runs with `--enable-code-coverage`, and the resulting `llvm-cov exp
 
 Each mutant run executes `STE_MUTANT=<id> swift test --skip-build` (or the custom test command) with a timeout of the baseline duration × `--timeout-factor`, with `--minimum-timeout` seconds as the minimum. Mutant runs write their profile data to a separate file, so they do not overwrite the baseline coverage.
 
+#### Test selection
+
+`TestSelection.swift`. When the static reference layer reads the index, `ReferenceColumn` also follows each test scope's calls through production code (`ReferenceResolver.referencedSymbols(scope:throughProductionCode:)`, with the same scope-restricted RTA for dynamic calls) and records, per method, the scopes that reach it as `TestSelector`s (the module from the index, the type or function name from `TestScopeFinder`).
+
+A mutant then runs against those scopes first (`swift test --filter`, or `{only-testing}` expanded to `-only-testing:` in custom mode). Only if it survives does the whole suite run, so the outcome is the one the whole suite gives; the reported duration is the sum. Before the mutants, `selectableTests` runs every selector once without mutations and drops modules whose selection fails, since a failing selection (an unknown target in `xcodebuild`) would look like a detected mutant.
+
+The selection contains every test that executes the method only as far as the index sees the calls. Calls the index cannot resolve (closures stored and called later, framework callbacks) mean fewer selected tests, which costs a whole-suite run but never changes an outcome.
+
 #### Mutant schemata
 
 Rebuilding for every mutant is slow, so every mutant is compiled into one binary and selected at runtime through an environment variable (Untch, Offutt & Harrold 1993, *Mutation Analysis Using Mutant Schemata*).

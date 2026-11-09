@@ -29,7 +29,8 @@ public struct AnalysisConfiguration: Sendable {
         case swiftPM(swiftExecutable: String, targets: [String], testFilter: String?)
         /// Any other project (e.g. Xcode). Commands run with `/bin/sh -c` inside the copied project.
         /// The active mutant is exported as `STE_MUTANT` and `TEST_RUNNER_STE_MUTANT` (the latter is
-        /// forwarded by `xcodebuild test` to the test process).
+        /// forwarded by `xcodebuild test` to the test process). `{only-testing}` in the test command
+        /// enables test selection (see `TestSelection`).
         case custom(sourceDirectories: [String], buildCommand: String, testCommand: String)
     }
 
@@ -48,6 +49,10 @@ public struct AnalysisConfiguration: Sendable {
     public var excludePathSubstrings: [String]
     public var timeoutFactor: Double
     public var minimumTimeout: Double
+    /// Run each mutant against the tests that reach its method first (see `TestSelection`). Needs
+    /// the index; SwiftPM: not with a test filter; custom mode: only with `{only-testing}` in the
+    /// test command.
+    public var testSelection: Bool
 
     public init(
         projectPath: URL,
@@ -60,7 +65,8 @@ public struct AnalysisConfiguration: Sendable {
         changedSince: String? = nil,
         excludePathSubstrings: [String] = [],
         timeoutFactor: Double = 3,
-        minimumTimeout: Double = 30
+        minimumTimeout: Double = 30,
+        testSelection: Bool = true
     ) {
         self.projectPath = projectPath.standardizedFileURL
         self.workDirectory = (workDirectory
@@ -74,6 +80,7 @@ public struct AnalysisConfiguration: Sendable {
         self.excludePathSubstrings = excludePathSubstrings
         self.timeoutFactor = timeoutFactor
         self.minimumTimeout = minimumTimeout
+        self.testSelection = testSelection
     }
 }
 
@@ -147,6 +154,7 @@ public final class Analyzer: @unchecked Sendable {
         let (baselineDuration, coverage) = try runBaseline()
         let timeout = max(baselineDuration * configuration.timeoutFactor, configuration.minimumTimeout)
         log(String(format: "Baseline passed in %.1fs; per-mutant timeout %.0fs.", baselineDuration, timeout))
+        let selectable = try selectableTests(references, timeout: timeout)
 
         // Decide up front which mutants run, so that progress can show the total.
         var planned: [(method: DiscoveredMethod, mutants: [Mutant], reached: Bool?)] = []
@@ -171,25 +179,38 @@ public final class Analyzer: @unchecked Sendable {
         log("Running \(progress.total) mutants.")
 
         var results: [MethodResult] = []
+        var statistics = SelectionStatistics()
         for (method, mutants, reached) in planned {
+            let tests = selectable.flatMap { all in
+                TestSelection.tests(
+                    reaching: references?.reachingTests[method.info].map { $0.intersection(all) }, all: all
+                )
+            }
             var mutantResults: [MutantResult] = []
             for mutant in mutants {
                 if reached == false {
                     mutantResults.append(MutantResult(mutant: mutant, outcome: .notRun))
                     continue
                 }
-                log(progress.next("\(method.info.name): \(mutant.mutation.summary)"))
-                let result = try runMutant(mutant, timeout: timeout)
+                let selected = tests.map { " [\($0.count) selected test \($0.count == 1 ? "scope" : "scopes")]" } ?? ""
+                log(progress.next("\(method.info.name): \(mutant.mutation.summary)\(selected)"))
+                let result = try runMutant(mutant, tests: tests, timeout: timeout, statistics: &statistics)
                 progress.finished(duration: result.duration ?? 0)
                 mutantResults.append(result)
             }
             results.append(MethodResult(
                 method: method.info,
-                referenced: references?[method.info] ?? .unknown,
+                referenced: references?.status[method.info] ?? .unknown,
                 executed: ExecutionStatus.resolve(coverage: reached, mutants: mutantResults),
                 classification: Classifier.classify(mutantResults),
                 mutants: mutantResults
             ))
+        }
+
+        if selectable != nil {
+            log("Test selection: \(statistics.decidedBySelection) mutants detected by the selected tests; "
+                + "\(statistics.reran) survived them and re-ran the whole suite; "
+                + "\(statistics.wholeSuite) ran the whole suite directly.")
         }
 
         return AnalysisReport(
@@ -318,9 +339,13 @@ public final class Analyzer: @unchecked Sendable {
 
     // MARK: - References
 
-    /// The referenced column, or `nil` when no index is available. Never fails the analysis.
-    private func loadReferences(_ methods: [MethodInfo]) -> [MethodInfo: ReferenceStatus]? {
-        guard configuration.useIndex else { return nil }
+    /// The referenced column (and the tests reaching each method, for test selection), or `nil`
+    /// when no index is available. Never fails the analysis.
+    private func loadReferences(_ methods: [MethodInfo]) -> ReferenceAnalysis? {
+        guard configuration.useIndex else {
+            if selectionRequested { log("Test selection needs the index; running the whole suite for every mutant.") }
+            return nil
+        }
         let swift: String
         let store: URL
         switch configuration.buildSystem {
@@ -340,7 +365,12 @@ public final class Analyzer: @unchecked Sendable {
                     .appendingPathComponent("index/store")
             }
         case .custom:
-            guard let path = configuration.indexStorePath else { return nil }
+            guard let path = configuration.indexStorePath else {
+                if selectionRequested {
+                    log("Test selection needs --index-store-path; running the whole suite for every mutant.")
+                }
+                return nil
+            }
             swift = "swift"
             store = URL(fileURLWithPath: path, relativeTo: copyRoot).standardizedFileURL
         }
@@ -352,7 +382,8 @@ public final class Analyzer: @unchecked Sendable {
             let result = try ReferenceColumn.compute(
                 storePath: store, libraryPath: library,
                 databasePath: configuration.workDirectory.appendingPathComponent("index-db"),
-                projectRoot: copyRoot, productionFiles: Set(productionFiles), methods: methods
+                projectRoot: copyRoot, productionFiles: Set(productionFiles), methods: methods,
+                selectTests: selectionRequested
             )
             log("Read test references from \(store.path).")
             return result
@@ -378,7 +409,9 @@ public final class Analyzer: @unchecked Sendable {
             guard configuration.useCoverage else { return (result.duration, nil) }
             return (result.duration, loadCoverage(swift: swift))
         case .custom(_, _, let testCommand):
-            let result = try ProcessRunner.runShell(testCommand, in: copyRoot, logFile: logFile)
+            let result = try ProcessRunner.runShell(
+                TestSelection.expand(testCommand, tests: nil), in: copyRoot, logFile: logFile
+            )
             guard result.exitCode == 0 else {
                 throw AnalysisError.baselineFailed(log: logFile, tail: Self.tail(result.output))
             }
@@ -404,28 +437,118 @@ public final class Analyzer: @unchecked Sendable {
         }
     }
 
-    private func runMutant(_ mutant: Mutant, timeout: Double) throws -> MutantResult {
-        let logFile = logDirectory.appendingPathComponent("mutant-\(mutant.id).log")
-        let id = String(mutant.id)
-        var environment = [
-            SchemataRewriter.environmentVariable: id,
-            "TEST_RUNNER_\(SchemataRewriter.environmentVariable)": id,
-        ]
-        let result: ProcessResult
+    // MARK: - Test selection
+
+    /// Whether the configuration asks for test selection and the build system supports it.
+    private var selectionRequested: Bool {
+        guard configuration.testSelection else { return false }
+        switch configuration.buildSystem {
+        case .swiftPM(_, _, let filter): return filter == nil
+        case .custom(_, _, let testCommand): return testCommand.contains(TestSelection.placeholder)
+        }
+    }
+
+    struct SelectionStatistics {
+        var decidedBySelection = 0
+        var reran = 0
+        var wholeSuite = 0
+    }
+
+    /// The tests that may be selected, or `nil` to run the whole suite for every mutant.
+    ///
+    /// Selecting every test must pass on the unmodified code. Otherwise a selector names a target
+    /// the scheme cannot run (`xcodebuild` then fails), or a test depends on tests outside the
+    /// selection; either would make a mutant look detected. A module whose selection fails on its
+    /// own is never selected.
+    private func selectableTests(_ references: ReferenceAnalysis?, timeout: Double) throws -> Set<TestSelector>? {
+        guard selectionRequested, let references else { return nil }
+        let all = references.allTests
+        guard !all.isEmpty else {
+            log("Test selection: no test scopes found in the index; running the whole suite for every mutant.")
+            return nil
+        }
+        log("Checking that the \(all.count) test scopes can be selected…")
+        let check = try executeTests(
+            all.sorted(), mutant: nil, timeout: timeout,
+            logFile: logDirectory.appendingPathComponent("selection-check.log")
+        )
+        if check.exitCode == 0 && !check.timedOut { return all }
+
+        var selectable = Set<TestSelector>()
+        var dropped: [String] = []
+        for (module, tests) in Dictionary(grouping: all, by: \.module).sorted(by: { $0.key < $1.key }) {
+            let result = try executeTests(
+                tests.sorted(), mutant: nil, timeout: timeout,
+                logFile: logDirectory.appendingPathComponent("selection-check-\(module).log")
+            )
+            if result.exitCode == 0 && !result.timedOut {
+                selectable.formUnion(tests)
+            } else {
+                dropped.append(module)
+            }
+        }
+        log("Test selection: selecting tests of \(dropped.joined(separator: ", ")) fails without mutations "
+            + "(see selection-check-*.log); mutants reached only by them run the whole suite.")
+        return selectable.isEmpty ? nil : selectable
+    }
+
+    // MARK: - Mutants
+
+    /// Runs the selected tests first, if any, and the whole suite when the mutant survives them.
+    private func runMutant(
+        _ mutant: Mutant, tests: [TestSelector]?, timeout: Double, statistics: inout SelectionStatistics
+    ) throws -> MutantResult {
+        var duration = 0.0
+        if let tests {
+            let selected = try executeTests(
+                tests, mutant: mutant, timeout: timeout,
+                logFile: logDirectory.appendingPathComponent("mutant-\(mutant.id)-selected.log")
+            )
+            duration += selected.duration
+            if selected.timedOut || selected.exitCode != 0 {
+                statistics.decidedBySelection += 1
+                return MutantResult(mutant: mutant, outcome: Self.outcome(selected), duration: duration)
+            }
+            statistics.reran += 1
+        } else {
+            statistics.wholeSuite += 1
+        }
+        let result = try executeTests(
+            nil, mutant: mutant, timeout: timeout,
+            logFile: logDirectory.appendingPathComponent("mutant-\(mutant.id).log")
+        )
+        duration += result.duration
+        return MutantResult(mutant: mutant, outcome: Self.outcome(result), duration: duration)
+    }
+
+    private static func outcome(_ result: ProcessResult) -> MutantOutcome {
+        result.timedOut ? .timedOut : (result.exitCode == 0 ? .survived : .killed)
+    }
+
+    /// Runs `tests` (`nil`: the whole suite) with `mutant` active (`nil`: none).
+    private func executeTests(
+        _ tests: [TestSelector]?, mutant: Mutant?, timeout: Double, logFile: URL
+    ) throws -> ProcessResult {
+        var environment: [String: String] = [:]
+        if let mutant {
+            environment[SchemataRewriter.environmentVariable] = String(mutant.id)
+            environment["TEST_RUNNER_\(SchemataRewriter.environmentVariable)"] = String(mutant.id)
+        }
         switch configuration.buildSystem {
         case .swiftPM(let swift, _, let filter):
+            // Keep the baseline's coverage data.
             environment["LLVM_PROFILE_FILE"] = logDirectory.appendingPathComponent("mutant.profraw").path
-            result = try ProcessRunner.run(
-                testArguments(swift: swift, filter: filter), in: copyRoot,
-                environment: environment, timeout: timeout, logFile: logFile
+            var arguments = testArguments(swift: swift, filter: filter)
+            if let tests { arguments += TestSelection.filterArguments(tests) }
+            return try ProcessRunner.run(
+                arguments, in: copyRoot, environment: environment, timeout: timeout, logFile: logFile
             )
         case .custom(_, _, let testCommand):
-            result = try ProcessRunner.runShell(
-                testCommand, in: copyRoot, environment: environment, timeout: timeout, logFile: logFile
+            return try ProcessRunner.runShell(
+                TestSelection.expand(testCommand, tests: tests), in: copyRoot,
+                environment: environment, timeout: timeout, logFile: logFile
             )
         }
-        let outcome: MutantOutcome = result.timedOut ? .timedOut : (result.exitCode == 0 ? .survived : .killed)
-        return MutantResult(mutant: mutant, outcome: outcome, duration: result.duration)
     }
 
     private func testArguments(swift: String, filter: String?) -> [String] {

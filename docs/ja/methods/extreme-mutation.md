@@ -91,7 +91,7 @@
 
 ## 実装
 
-全ミュータントを 1 つのバイナリに埋め込み、実行時に切り替えます（mutant schemata）。詳しくは [ARCHITECTURE.ja.md](../../../ARCHITECTURE.ja.md#mutant-schemata) を参照してください。
+全ミュータントを 1 つのバイナリに埋め込み、実行時に切り替えます（mutant schemata）。各ミュータントは、まずメソッドに届くテストだけを流し、すり抜けた場合だけ全テストを流します。結果は同じで、時間が短くなります（[テスト選択](../../../README.ja.md#テスト選択)）。詳しくは [ARCHITECTURE.ja.md](../../../ARCHITECTURE.ja.md#mutant-schemata) を参照してください。
 
 ## 参考文献
 

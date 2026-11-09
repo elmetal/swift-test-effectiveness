@@ -27,24 +27,31 @@ struct TestScope: Hashable {
 
     var name: String
     var ranges: [Range]
+    /// The type or function name a test runner selects the scope by (`StoreTests`, `percent`).
+    var testName: String = ""
+    /// A free `@Test` function rather than a type.
+    var isFunction = false
 }
 
 enum TestScopeFinder {
     /// Top-level declarations of `source` that contain tests, keyed by type name so extensions of
     /// a test class join the class.
-    static func scopes(source: String, path: String) -> [(key: String, range: TestScope.Range, isTest: Bool)] {
+    static func scopes(
+        source: String, path: String
+    ) -> [(key: String, testName: String, isFunction: Bool, range: TestScope.Range, isTest: Bool)] {
         let tree = Parser.parse(source: source)
         let converter = SourceLocationConverter(fileName: path, tree: tree)
-        var result: [(String, TestScope.Range, Bool)] = []
+        var result: [(String, String, Bool, TestScope.Range, Bool)] = []
         for item in tree.statements {
             guard let decl = item.item.as(DeclSyntax.self) else { continue }
             let start = decl.startLocation(converter: converter, afterLeadingTrivia: true).line
             let end = decl.endLocation(converter: converter, afterTrailingTrivia: false).line
             let range = TestScope.Range(path: path, lines: start...max(start, end))
             if let function = decl.as(FunctionDeclSyntax.self) {
-                result.append(("\(path):\(start) \(function.name.text)", range, hasAttribute("Test", function.attributes)))
+                let name = function.name.text
+                result.append(("\(path):\(start) \(name)", name, true, range, hasAttribute("Test", function.attributes)))
             } else if let (name, isTest) = typeScope(decl) {
-                result.append((name, range, isTest))
+                result.append((name, name, false, range, isTest))
             }
         }
         return result
@@ -105,15 +112,19 @@ enum TestScopeFinder {
     static func scopes(files: [(path: String, source: String)]) -> [TestScope] {
         var ranges: [String: [TestScope.Range]] = [:]
         var isTest: [String: Bool] = [:]
+        var names: [String: (String, Bool)] = [:]
         var order: [String] = []
         for file in files {
-            for (key, range, test) in scopes(source: file.source, path: file.path) {
+            for (key, testName, isFunction, range, test) in scopes(source: file.source, path: file.path) {
                 if ranges[key] == nil { order.append(key) }
+                if names[key] == nil { names[key] = (testName, isFunction) }
                 ranges[key, default: []].append(range)
                 isTest[key] = (isTest[key] ?? false) || test
             }
         }
-        return order.filter { isTest[$0] == true }.map { TestScope(name: $0, ranges: ranges[$0]!) }
+        return order.filter { isTest[$0] == true }.map {
+            TestScope(name: $0, ranges: ranges[$0]!, testName: names[$0]!.0, isFunction: names[$0]!.1)
+        }
     }
 }
 
@@ -138,6 +149,7 @@ final class ReferenceResolver {
     private var implementationCache: [String: [(implementation: String, owner: String)]] = [:]
     private var superclassCache: [String: [String]] = [:]
     private var extendedTypeCache: [String: String?] = [:]
+    private var contentsCache: [String: [SymbolOccurrence]] = [:]
 
     /// - Parameters:
     ///   - testFiles: paths of test files, as the index records them.
@@ -154,14 +166,18 @@ final class ReferenceResolver {
         scopes.reduce(into: Set<String>()) { $0.formUnion(referencedSymbols(scope: $1)) }
     }
 
-    func referencedSymbols(scope: TestScope) -> Set<String> {
+    /// - Parameter throughProductionCode: also follow calls inside production code. The referenced
+    ///   column does not; test selection does, to find every test that may execute a method.
+    func referencedSymbols(scope: TestScope, throughProductionCode: Bool = false) -> Set<String> {
         var referenced = Set<String>()
         var namedTypes = Set<String>()
         var dynamicCalls = Set<String>()
         var pending: [String] = []
 
         func reach(_ usr: String) {
-            guard referenced.insert(usr).inserted, isTestCode(usr) else { return }
+            guard referenced.insert(usr).inserted,
+                  throughProductionCode ? isProjectCode(usr) : isTestCode(usr)
+            else { return }
             pending.append(usr)
         }
         func consume(_ occurrences: [SymbolOccurrence]) {
@@ -237,12 +253,21 @@ final class ReferenceResolver {
 
     /// Occurrences inside a declaration's body, including the bodies of a property's accessors.
     private func contents(of usr: String) -> [SymbolOccurrence] {
+        if let cached = contentsCache[usr] { return cached }
         var result = index.occurrences(relatedToUSR: usr, roles: .containedBy)
         for accessor in index.occurrences(relatedToUSR: usr, roles: .accessorOf)
         where accessor.roles.contains(.definition) {
             result += index.occurrences(relatedToUSR: accessor.symbol.usr, roles: .containedBy)
         }
+        contentsCache[usr] = result
         return result
+    }
+
+    /// The module a scope's test code is compiled into, as the index records it.
+    func moduleName(of scope: TestScope) -> String? {
+        scope.ranges.lazy.compactMap { range in
+            self.occurrences(inFile: range.path).first { !$0.location.moduleName.isEmpty }?.location.moduleName
+        }.first
     }
 
     /// The implementations a dynamic call to `requirement` reaches when the receiver is one of
@@ -322,6 +347,17 @@ final class ReferenceResolver {
     }
 }
 
+/// What the index says about the analyzed methods.
+struct ReferenceAnalysis {
+    /// The referenced column.
+    var status: [MethodInfo: ReferenceStatus]
+    /// For each method, the tests that may execute it: the scopes that reach one of its symbols,
+    /// following calls through test and production code. Empty unless test selection asked for it.
+    var reachingTests: [MethodInfo: Set<TestSelector>] = [:]
+    /// Every test scope found, as a selector.
+    var allTests: Set<TestSelector> = []
+}
+
 /// Opens an index store and fills the referenced column for a set of methods.
 enum ReferenceColumn {
     struct Unavailable: Error, CustomStringConvertible {
@@ -334,11 +370,11 @@ enum ReferenceColumn {
     /// - Parameters:
     ///   - projectRoot: the root the methods' relative paths are resolved against (the build copy).
     ///   - productionFiles: relative paths of the analyzed sources; never treated as test code.
-    /// - Returns: the status for each method, keyed by `MethodInfo`.
+    ///   - selectTests: also compute the tests that reach each method.
     static func compute(
         storePath: URL, libraryPath: URL, databasePath: URL,
-        projectRoot: URL, productionFiles: Set<String>, methods: [MethodInfo]
-    ) throws -> [MethodInfo: ReferenceStatus] {
+        projectRoot: URL, productionFiles: Set<String>, methods: [MethodInfo], selectTests: Bool = false
+    ) throws -> ReferenceAnalysis {
         guard FileManager.default.fileExists(atPath: storePath.path) else {
             throw Unavailable(description: "no index store at \(storePath.path)")
         }
@@ -355,12 +391,16 @@ enum ReferenceColumn {
             throw Unavailable(description: "could not open the index store: \(error)")
         }
         index.pollForUnitChangesAndWait()
-        return compute(index: index, projectRoot: projectRoot, productionFiles: productionFiles, methods: methods)
+        return compute(
+            index: index, projectRoot: projectRoot, productionFiles: productionFiles,
+            methods: methods, selectTests: selectTests
+        )
     }
 
     static func compute(
-        index: any SymbolIndex, projectRoot: URL, productionFiles: Set<String>, methods: [MethodInfo]
-    ) -> [MethodInfo: ReferenceStatus] {
+        index: any SymbolIndex, projectRoot: URL, productionFiles: Set<String>, methods: [MethodInfo],
+        selectTests: Bool = false
+    ) -> ReferenceAnalysis {
         // The compiler records real paths; the project may sit behind a symlink (e.g. /tmp → /private/tmp).
         // Foundation's `resolvingSymlinksInPath` drops `/private` again, so ask `realpath(3)`.
         let roots = Array(Set([projectRoot.standardizedFileURL.path, realPath(projectRoot.path)]))
@@ -385,19 +425,37 @@ enum ReferenceColumn {
         let resolver = ReferenceResolver(index: index, testFiles: testFiles, projectRoots: roots)
         let referenced = resolver.referencedSymbols(scopes: scopes)
 
-        var result: [MethodInfo: ReferenceStatus] = [:]
+        // Selection follows production code too, so a helper reached only through a public method
+        // still gets the tests of that method.
+        var reachable: [(selector: TestSelector, symbols: Set<String>)] = []
+        if selectTests {
+            for scope in scopes {
+                guard let module = resolver.moduleName(of: scope) else { continue }
+                reachable.append((
+                    TestSelector(module: module, name: scope.testName, isFunction: scope.isFunction),
+                    resolver.referencedSymbols(scope: scope, throughProductionCode: true)
+                ))
+            }
+        }
+
+        var analysis = ReferenceAnalysis(status: [:], allTests: Set(reachable.map(\.selector)))
         for method in methods {
             let lines = method.declarationStart.line...max(method.declarationStart.line, method.bodyStart.line)
             let declared = roots.lazy
                 .map { resolver.declaredSymbols(path: $0 + method.file, lines: lines) }
                 .first { !$0.isEmpty } ?? []
             if declared.isEmpty {
-                result[method] = .unknown
-            } else {
-                result[method] = declared.isDisjoint(with: referenced) ? .notReferenced : .referenced
+                analysis.status[method] = .unknown
+                continue
+            }
+            analysis.status[method] = declared.isDisjoint(with: referenced) ? .notReferenced : .referenced
+            if selectTests {
+                analysis.reachingTests[method] = Set(
+                    reachable.filter { !$0.symbols.isDisjoint(with: declared) }.map(\.selector)
+                )
             }
         }
-        return result
+        return analysis
     }
 
     static func realPath(_ path: String) -> String {

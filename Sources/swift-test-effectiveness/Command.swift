@@ -65,6 +65,9 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Option(help: "Index store for the referenced column; a relative path is resolved inside the copied project. SwiftPM: defaults to the one the build writes. Custom mode: required (e.g. build/Index.noindex/DataStore with -derivedDataPath build).")
     var indexStorePath: String?
 
+    @Flag(inversion: .prefixedNo, help: "Run each mutant against the tests that reach its method first, and against the whole suite only if it survives them. Needs the index. Custom mode: put {only-testing} in --test-command where xcodebuild's -only-testing: arguments go. SwiftPM: not with --test-filter.")
+    var testSelection = true
+
     @Option(help: "Directory for the mutated copy and logs (default: <project>/.build/test-effectiveness).")
     var workDir: String?
 
@@ -124,7 +127,8 @@ struct SwiftTestEffectiveness: ParsableCommand {
             changedSince: since,
             excludePathSubstrings: excludes,
             timeoutFactor: timeoutFactor,
-            minimumTimeout: minimumTimeout
+            minimumTimeout: minimumTimeout,
+            testSelection: testSelection
         )
         let quiet = self.quiet
         let analyzer = Analyzer(configuration: configuration) { message in

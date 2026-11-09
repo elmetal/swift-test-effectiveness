@@ -91,7 +91,7 @@ The check is syntactic, so the receiver's type is not known: `logger.info(…)` 
 
 ## Implementation
 
-All mutants are compiled into a single binary and selected at runtime (mutant schemata). See [ARCHITECTURE.md](../../ARCHITECTURE.md#mutant-schemata).
+All mutants are compiled into a single binary and selected at runtime (mutant schemata). Each mutant runs against the tests that reach its method first, and against the whole suite only if it survives them, which gives the same results in less time ([test selection](../../README.md#test-selection)). See [ARCHITECTURE.md](../../ARCHITECTURE.md#mutant-schemata).
 
 ## References
 
