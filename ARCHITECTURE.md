@@ -53,6 +53,8 @@ The layer never fails the analysis: without an index the column is unknown. It d
 
 The baseline runs with `--enable-code-coverage`, and the resulting `llvm-cov export` JSON is loaded into a `CoverageMap`. Each function is matched to a declaration by the position of its body's opening `{`. When coverage is missing or unreadable, the column is unknown and later layers run on every declaration. The column is stored per declaration (`MethodResult.executed`); `ExecutionStatus.resolve` combines it with the mutant outcomes, letting a killed mutant override coverage.
 
+In custom mode, the baseline's test command writes the profile (`xcodebuild -enableCodeCoverage YES`). `CoverageArtifacts` picks the newest `.profdata` under `--coverage-profdata` that is not older than the baseline, and every Mach-O file under `--coverage-binary` (outside `.dSYM` bundles). Each binary is exported on its own with `xcrun llvm-cov export`, because one binary without coverage data makes an export of several fail; the maps are merged, and a function counts as executed if any binary executed it.
+
 ### Extreme mutation
 
 Each mutant run executes `STE_MUTANT=<id> swift test --skip-build` (or the custom test command) with a timeout of the baseline duration × `--timeout-factor`, with `--minimum-timeout` seconds as the minimum. Mutant runs write their profile data to a separate file, so they do not overwrite the baseline coverage.

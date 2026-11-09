@@ -64,6 +64,8 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 
 ベースラインを `--enable-code-coverage` 付きで実行し、出力された `llvm-cov export` の JSON を `CoverageMap` に読み込みます。各関数は、本体の開き括弧 `{` の位置で宣言に対応付けます。カバレッジがない、または読めない場合は列が不明になり、後段の層は全宣言に対して実行されます。列は宣言ごとに保持し（`MethodResult.executed`）、`ExecutionStatus.resolve` がミュータントの結果と合わせて決めます。殺されたミュータントがあれば、カバレッジより優先します。
 
+カスタムモードでは、ベースラインのテストコマンドがプロファイルを書き出します（`xcodebuild -enableCodeCoverage YES`）。`CoverageArtifacts` は、`--coverage-profdata` の下からベースラインより古くない最新の `.profdata` を、`--coverage-binary` の下から Mach-O ファイルすべて（`.dSYM` バンドルの中は除く）を選びます。カバレッジデータのないバイナリが 1 つでもあると複数バイナリをまとめた export は失敗するので、バイナリごとに `xcrun llvm-cov export` を実行してマップをマージします。関数は、どれかのバイナリで実行されていれば実行済みとみなします。
+
 ### 極端ミューテーション
 
 ミュータントごとに、`STE_MUTANT=<id> swift test --skip-build`（またはカスタムのテストコマンド）をタイムアウト付きで実行します。タイムアウトはベースラインの所要時間 × `--timeout-factor`（下限 `--minimum-timeout` 秒）です。ミュータント実行時のプロファイルデータは別ファイルに書き出すので、ベースラインのカバレッジを上書きしません。

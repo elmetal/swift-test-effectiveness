@@ -44,6 +44,13 @@ public struct AnalysisConfiguration: Sendable {
     /// runs. SwiftPM: defaults to the one `swift build --enable-index-store` writes. Custom mode:
     /// required for the referenced column (e.g. `<derivedDataPath>/Index.noindex/DataStore`).
     public var indexStorePath: String?
+    /// Custom mode: the `.profdata` the baseline writes, or a directory to search for the newest
+    /// one (e.g. `<derivedDataPath>/Build/ProfileData`). Relative paths are resolved inside the
+    /// copied project. Without it, custom mode collects no coverage.
+    public var coverageProfilePath: String?
+    /// Custom mode: binaries with coverage instrumentation, or directories to search for Mach-O
+    /// files (e.g. `<derivedDataPath>/Build/Products`).
+    public var coverageBinaryPaths: [String]
     public var discovery: DiscoveryOptions
     public var changedSince: String?
     public var excludePathSubstrings: [String]
@@ -61,6 +68,8 @@ public struct AnalysisConfiguration: Sendable {
         useCoverage: Bool = true,
         useIndex: Bool = true,
         indexStorePath: String? = nil,
+        coverageProfilePath: String? = nil,
+        coverageBinaryPaths: [String] = [],
         discovery: DiscoveryOptions = .init(),
         changedSince: String? = nil,
         excludePathSubstrings: [String] = [],
@@ -75,6 +84,8 @@ public struct AnalysisConfiguration: Sendable {
         self.useCoverage = useCoverage
         self.useIndex = useIndex
         self.indexStorePath = indexStorePath
+        self.coverageProfilePath = coverageProfilePath
+        self.coverageBinaryPaths = coverageBinaryPaths
         self.discovery = discovery
         self.changedSince = changedSince
         self.excludePathSubstrings = excludePathSubstrings
@@ -409,14 +420,54 @@ public final class Analyzer: @unchecked Sendable {
             guard configuration.useCoverage else { return (result.duration, nil) }
             return (result.duration, loadCoverage(swift: swift))
         case .custom(_, _, let testCommand):
+            // Coverage files are at least as new as the baseline; older ones are left over.
+            let start = Date().addingTimeInterval(-1)
             let result = try ProcessRunner.runShell(
                 TestSelection.expand(testCommand, tests: nil), in: copyRoot, logFile: logFile
             )
             guard result.exitCode == 0 else {
                 throw AnalysisError.baselineFailed(log: logFile, tail: Self.tail(result.output))
             }
-            return (result.duration, nil)
+            guard configuration.useCoverage else { return (result.duration, nil) }
+            return (result.duration, loadCustomCoverage(since: start))
         }
+    }
+
+    /// Custom mode: exports the coverage of each binary with `llvm-cov export` and merges it.
+    /// Binaries without coverage data (resources, uninstrumented frameworks) are skipped.
+    private func loadCustomCoverage(since start: Date) -> CoverageMap? {
+        guard let profilePath = configuration.coverageProfilePath, !configuration.coverageBinaryPaths.isEmpty else {
+            log("Custom mode collects no coverage without --coverage-profdata and --coverage-binary; running every mutant.")
+            return nil
+        }
+        let resolve = { (path: String) in URL(fileURLWithPath: path, relativeTo: self.copyRoot).standardizedFileURL }
+        guard let profile = CoverageArtifacts.profile(at: resolve(profilePath), modifiedAfter: start) else {
+            log("No coverage profile written by the baseline at \(resolve(profilePath).path) "
+                + "(does the test command pass -enableCodeCoverage YES?); running every mutant.")
+            return nil
+        }
+        let binaries = configuration.coverageBinaryPaths.flatMap { CoverageArtifacts.binaries(at: resolve($0)) }
+        let exportDirectory = configuration.workDirectory.appendingPathComponent("coverage")
+        try? FileManager.default.removeItem(at: exportDirectory)
+        try? FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
+
+        var maps: [CoverageMap] = []
+        for (number, binary) in binaries.enumerated() {
+            let output = exportDirectory.appendingPathComponent("\(number).json")
+            let command = ["xcrun", "llvm-cov", "export", "-instr-profile", profile.path, binary.path]
+                .map(TestSelection.shellQuoted).joined(separator: " ") + " > " + TestSelection.shellQuoted(output.path)
+            guard let result = try? ProcessRunner.runShell(command, in: copyRoot), result.exitCode == 0,
+                  let data = FileManager.default.contents(atPath: output.path),
+                  let map = try? CoverageMap(jsonData: data)
+            else { continue }
+            maps.append(map)
+        }
+        guard !maps.isEmpty else {
+            log("None of the \(binaries.count) binaries has coverage data for \(profile.path); running every mutant.")
+            return nil
+        }
+        log("Read coverage of \(maps.count) of \(binaries.count) binaries from \(profile.path).")
+        return CoverageMap(merging: maps)
     }
 
     private func loadCoverage(swift: String) -> CoverageMap? {

@@ -24,7 +24,8 @@ As a result, only methods whose mutants all survived can stay `unknown`. In text
 | Situation | Behaviour |
 |---|---|
 | `--no-coverage` | coverage is not collected |
-| custom mode (`--build-command` / `--test-command`) | coverage is not collected |
+| custom mode without `--coverage-profdata` and `--coverage-binary` | coverage is not collected |
+| custom mode: the baseline wrote no `.profdata` (no `-enableCodeCoverage YES`), or no binary has coverage data | a message is logged and coverage is treated as unavailable |
 | coverage data cannot be read or parsed | a message is logged and coverage is treated as unavailable |
 | a method has no matching function in the data | that method is treated as unknown (but see [Conditional compilation](#conditional-compilation)) |
 

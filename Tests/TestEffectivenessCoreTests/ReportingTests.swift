@@ -20,6 +20,60 @@ struct CoverageMapTests {
         #expect(map.wasExecuted(file: "/p/A.swift", bodyStart: SourcePosition(line: 99, column: 1)) == nil)
         #expect(map.wasExecuted(file: "/p/B.swift", bodyStart: SourcePosition(line: 7, column: 48)) == nil)
     }
+
+    /// A function linked into several binaries (the app and a test bundle) is executed if any
+    /// binary executed it.
+    @Test func mergedMapsCountAnyExecution() throws {
+        func map(count: Int) throws -> CoverageMap {
+            try CoverageMap(jsonData: Data("""
+            {"data":[{"functions":[
+              {"name":"f","count":\(count),"regions":[[7,48,9,6,\(count),0,0,0]],"filenames":["/p/A.swift"]}
+            ]}]}
+            """.utf8))
+        }
+        let merged = CoverageMap(merging: [try map(count: 0), try map(count: 2)])
+        #expect(merged.wasExecuted(file: "/p/A.swift", bodyStart: SourcePosition(line: 7, column: 48)) == true)
+        let unexecuted = CoverageMap(merging: [try map(count: 0)])
+        #expect(unexecuted.wasExecuted(file: "/p/A.swift", bodyStart: SourcePosition(line: 7, column: 48)) == false)
+    }
+}
+
+struct CoverageArtifactsTests {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("ste-artifacts-\(UUID().uuidString)")
+
+    private func write(_ path: String, _ bytes: [UInt8], modified: Date = Date()) throws -> URL {
+        let url = root.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(bytes).write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+        return url
+    }
+
+    @Test func findsNewestProfileWrittenSinceTheBaseline() throws {
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = Date()
+        _ = try write("ProfileData/OLD/Coverage.profdata", [0], modified: now.addingTimeInterval(-3600))
+        let fresh = try write("ProfileData/NEW/Coverage.profdata", [0], modified: now)
+        _ = try write("ProfileData/NEW/notes.txt", [0], modified: now)
+        let directory = root.appendingPathComponent("ProfileData")
+        // The enumerator resolves /var to /private/var; compare the part under the root.
+        #expect(CoverageArtifacts.profile(at: directory, modifiedAfter: now.addingTimeInterval(-60))?
+            .path.hasSuffix("ProfileData/NEW/Coverage.profdata") == true)
+        #expect(CoverageArtifacts.profile(at: directory, modifiedAfter: now.addingTimeInterval(60)) == nil)
+        #expect(CoverageArtifacts.profile(at: fresh, modifiedAfter: now.addingTimeInterval(-60))?.path == fresh.path)
+    }
+
+    @Test func findsMachOFilesOutsideDSYMs() throws {
+        defer { try? FileManager.default.removeItem(at: root) }
+        let machO: [UInt8] = [0xCF, 0xFA, 0xED, 0xFE, 0, 0]
+        let app = try write("Products/App.app/App", machO)
+        let dylib = try write("Products/App.app/App.debug.dylib", machO)
+        _ = try write("Products/App.app/Info.plist", Array("<plist>".utf8))
+        _ = try write("Products/App.app.dSYM/Contents/Resources/DWARF/App", machO)
+        let binaries = CoverageArtifacts.binaries(at: root.appendingPathComponent("Products"))
+        #expect(binaries.map(\.lastPathComponent) == [app.lastPathComponent, dylib.lastPathComponent])
+        #expect(CoverageArtifacts.binaries(at: app) == [app])
+    }
 }
 
 struct GitDiffTests {
