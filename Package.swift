@@ -6,7 +6,6 @@ let package = Package(
     platforms: [.macOS(.v26)],
     products: [
         .executable(name: "swift-test-effectiveness", targets: ["swift-test-effectiveness"]),
-        .library(name: "TestEffectivenessCore", targets: ["TestEffectivenessCore"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.0"),

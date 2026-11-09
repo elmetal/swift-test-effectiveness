@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -25,7 +26,57 @@ public enum ProcessRunnerError: Error, CustomStringConvertible {
 
 /// Runs a command in its own process group so that a timeout can kill the whole tree
 /// (`swift test` spawns the actual test runner as a child process).
+///
+/// Because of that, a Ctrl-C in the terminal reaches only this process, not the command. Call
+/// `forwardTerminationSignals()` once so that the running command is stopped too.
 public enum ProcessRunner {
+    private struct Children {
+        /// Process groups of the commands that are running.
+        var groups: Set<pid_t> = []
+        /// Set once a termination signal arrived; no further command is started.
+        var terminating = false
+        var signalSources: [any DispatchSourceSignal] = []
+    }
+
+    private static let children = Mutex(Children())
+
+    /// On SIGINT, SIGTERM or SIGHUP, stop the running commands (SIGTERM, then SIGKILL after a grace
+    /// period) and exit with `128 + signal`.
+    public static func forwardTerminationSignals(gracePeriod: Double = 5) {
+        children.withLock { state in
+            guard state.signalSources.isEmpty else { return }
+            for signalNumber in [SIGINT, SIGTERM, SIGHUP] {
+                signal(signalNumber, SIG_IGN)
+                let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .global())
+                source.setEventHandler { terminateChildren(signal: signalNumber, gracePeriod: gracePeriod) }
+                source.resume()
+                state.signalSources.append(source)
+            }
+        }
+    }
+
+    private static func terminateChildren(signal signalNumber: Int32, gracePeriod: Double) -> Never {
+        let groups = children.withLock { state in
+            state.terminating = true
+            return state.groups
+        }
+        if !groups.isEmpty {
+            FileHandle.standardError.write(Data("\nInterrupted; stopping the running command…\n".utf8))
+        }
+        for group in groups { kill(-group, SIGTERM) }
+        let deadline = Date().addingTimeInterval(gracePeriod)
+        // `kill(-group, 0)` succeeds while any process of the group is left.
+        while Date() < deadline, groups.contains(where: { kill(-$0, 0) == 0 }) {
+            usleep(50_000)
+        }
+        for group in groups { kill(-group, SIGKILL) }
+        exit(128 + signalNumber)
+    }
+
+    /// Blocks the caller for good once termination started; the signal handler exits the process.
+    private static func parkForTermination() -> Never {
+        while true { pause() }
+    }
     public static func run(
         _ arguments: [String],
         in directory: URL,
@@ -66,11 +117,19 @@ public enum ProcessRunner {
 
         let start = Date()
         var pid: pid_t = 0
-        let status = withCStrings(argv) { argvPointer in
-            withCStrings(envp) { envPointer in
-                posix_spawn(&pid, "/bin/sh", &fileActions, &attributes, argvPointer, envPointer)
+        // Spawn and register under the lock, so a signal handler either sees the new group or
+        // stops this call from starting it.
+        let status: Int32? = children.withLock { state in
+            if state.terminating { return nil }
+            let status = withCStrings(argv) { argvPointer in
+                withCStrings(envp) { envPointer in
+                    posix_spawn(&pid, "/bin/sh", &fileActions, &attributes, argvPointer, envPointer)
+                }
             }
+            if status == 0 { state.groups.insert(pid) }
+            return status
         }
+        guard let status else { parkForTermination() }
         guard status == 0 else {
             throw ProcessRunnerError.spawnFailed(command: arguments.joined(separator: " "), errno: status)
         }
@@ -90,6 +149,12 @@ public enum ProcessRunner {
             usleep(20_000)
         }
         let duration = Date().timeIntervalSince(start)
+        let terminating = children.withLock { state in
+            state.groups.remove(pid)
+            return state.terminating
+        }
+        // The command ended because of the signal; its result must not be read as a test outcome.
+        if terminating { parkForTermination() }
         let output = (try? String(contentsOf: outputURL, encoding: .utf8)) ?? ""
         return ProcessResult(
             exitCode: timedOut ? -1 : decodeExitStatus(exitStatus),

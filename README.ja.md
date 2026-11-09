@@ -58,17 +58,32 @@ Partially tested (2)
 ## 動作要件
 
 - macOS 26 以降
+- `--since` を使う場合のみ git リポジトリ
 - Swift 6.2 以降（Xcode 26 以降）。動作確認は Swift 6.4（Xcode 27）で行っています。
 - 選択中の Xcode の macOS SDK に合った Swift ツールチェーン。swift.org や swiftly で入れたツールチェーンがその SDK より古いと、パッケージのマニフェストをコンパイルできません。`swift build` が `unknown argument: '-target-arch-variant'` を出してコンパイラがクラッシュします。この場合は Xcode のツールチェーンを使ってください（`xcrun swift`、または `xcode-select` が Xcode を指していれば `/usr/bin/swift`）。
 
 解析に使う `swift`（`--swift`）は対象プロジェクトのビルドとテストにも使い、インデックスもそのツールチェーンの `libIndexStore.dylib` で読みます。そのため、同じ条件が当てはまります。
+
+## インストール
+
+ソースからビルドし、`PATH` の通った場所にコピーします。
+
+```bash
+git clone https://github.com/elmetal/swift-test-effectiveness.git
+cd swift-test-effectiveness
+git checkout 0.0.1
+swift build -c release
+cp .build/release/swift-test-effectiveness /usr/local/bin/
+```
+
+インストールしたバージョンは `swift-test-effectiveness --version` で確認できます。
 
 ## 使い方
 
 ### Swift Package
 
 ```bash
-swift run swift-test-effectiveness /path/to/package
+swift-test-effectiveness /path/to/package
 ```
 
 プロジェクトを `<package>/.build/test-effectiveness` にコピーしてそこで解析するので、元のソースは変更しません。最初に、変更していないコードでテストスイートが通る必要があります（ベースライン）。通らなければ解析を中止します。パイプラインは [ARCHITECTURE.ja.md](ARCHITECTURE.ja.md#パイプライン) を参照してください。
@@ -83,7 +98,7 @@ swift run swift-test-effectiveness /path/to/package
 | `--exclude <substring>` | パスに文字列を含むファイルを除外（複数可） |
 | `--swift <path>` | 使用する `swift` 実行ファイル |
 | `--dry-run` | ビルドも実行もせず、解析対象の一覧だけを表示する |
-| `--format text\|markdown\|json` | レポート形式（markdown は PR コメント向け） |
+| `--format text\|markdown\|json` | レポート形式（markdown は PR コメント向け。JSON は後述） |
 | `-o, --output <file>` | レポートをファイルに書き出す |
 | `--fail-on-pseudo-tested` | pseudo-tested メソッドがあれば終了コード 1 |
 
@@ -99,14 +114,16 @@ swift run swift-test-effectiveness /path/to/package
 | `--arid-call <name>` | 極端ミューテーション | この関数の呼び出しもログ出力とみなす。例：`track`、`Analytics.shared.track`（複数可） |
 | `--timeout-factor`, `--minimum-timeout` | 極端ミューテーション | ミュータントごとのテスト実行のタイムアウト（ベースライン時間 × 係数、下限秒数） |
 
-終了コード：`0` 成功、`1` `--fail-on-pseudo-tested` に該当、`2` ビルド失敗やベースライン失敗など。
+終了コード：`0` 成功、`1` `--fail-on-pseudo-tested` に該当、`2` ビルド失敗やベースライン失敗など、`128 + シグナル番号` 中断（Ctrl-C なら `130`）。中断したときは、実行中のビルドやテストのコマンドも止めます。
+
+JSON レポートの先頭には `schemaVersion` と `toolVersion` が入ります。`schemaVersion` はフィールドの削除・名前変更・意味の変更があったときに上がります。フィールドの追加では上がらないので、知らないキーは無視してください。
 
 ### Xcode プロジェクトなど（カスタムモード）
 
 `--source-dir`、`--build-command`、`--test-command` を指定すると、任意のビルドシステムで動きます。コマンドはコピーしたプロジェクト内で `/bin/sh -c` で実行されます。
 
 ```bash
-swift run swift-test-effectiveness /path/to/App \
+swift-test-effectiveness /path/to/App \
   --source-dir App \
   --build-command "xcodebuild build-for-testing -scheme App -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
   --test-command  "xcodebuild test-without-building -scheme App -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'"
@@ -119,7 +136,7 @@ swift run swift-test-effectiveness /path/to/App \
 ### CI での例
 
 ```bash
-swift run swift-test-effectiveness . --since origin/main --format markdown -o effectiveness.md
+swift-test-effectiveness . --since origin/main --format markdown -o effectiveness.md
 ```
 
 生成された Markdown を PR コメントに貼ると、変更された宣言についてだけ、テストに何が欠けているかと直し方が表示されます。
@@ -142,6 +159,7 @@ swift run swift-test-effectiveness . --since origin/main --format markdown -o ef
 
 ```bash
 swift test
+swift run swift-test-effectiveness /path/to/package
 ```
 
 `Tests/Fixtures` のフィクスチャに対する統合テスト（遅い）：
