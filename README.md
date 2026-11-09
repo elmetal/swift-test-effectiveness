@@ -46,6 +46,8 @@ Each entry also carries the [referenced](docs/methods/static-references.md) colu
 
 A test that injects a mock does not count as a reference to the real implementations. Calls through a protocol count only for the concrete types that the same test (or XCTestCase, or suite) names.
 
+Apart from the declarations, the report has a section about the tests themselves. *Tests that fail alone* lists test scopes that pass in the whole suite but fail when run on their own, without mutations: they depend on tests that run before them, or share state with them. Tests should not depend on each other; make each one set up what it needs. The check runs with [test selection](#test-selection).
+
 ## Requirements
 
 - macOS 26 or later
@@ -111,7 +113,7 @@ Options for a specific method:
 
 Exit status: `0` success, `1` pseudo-tested methods found with `--fail-on-pseudo-tested`, `2` analysis error (build failure, failing baseline, …), `128 + signal` when interrupted (`130` for Ctrl-C). On interruption the running build or test command is stopped as well.
 
-The JSON report starts with `schemaVersion` and `toolVersion`. `schemaVersion` is incremented when a field is removed, renamed or changes meaning; new fields may be added without changing it, so ignore keys you do not know.
+The JSON report starts with `schemaVersion` and `toolVersion`. `schemaVersion` is incremented when a field is removed, renamed or changes meaning; new fields may be added without changing it, so ignore keys you do not know. `testsFailingAlone` lists the [tests that fail alone](#reading-the-report) (`test`, `timedOut`, `log`); it is absent when the check did not run.
 
 ### Xcode and other projects (custom mode)
 
@@ -150,6 +152,7 @@ Each mutant run executes the test suite, so a large suite makes the analysis slo
 - The selected tests are the test scopes (XCTestCase subclasses, suites, free `@Test` functions) that reach one of the method's symbols in the compiler's index, following calls through test helpers and production code. A method that no test reaches, or that every test reaches, runs the whole suite directly.
 - It needs the index. SwiftPM: on by default, but not with `--test-filter`. Custom mode: on when the test command contains `{only-testing}`, which is replaced with `'-only-testing:<module>/<Type>'` and `'-only-testing:<module>/<function>()'` arguments (and with nothing when the whole suite runs).
 - Before the mutants, every selectable test runs once without mutations. If that fails, each test module is tried on its own and a module that still fails is never selected (for example a target the scheme does not contain, or a target whose name differs from its module name). The logs are `selection-check*.log`.
+- Then each selectable test scope runs once on its own, without mutations (one run per scope, on the `--jobs` workers). A scope that fails alone passes in the whole suite only because other tests ran first or share state with it; selected alone, it would fail and make a mutant look detected. Such scopes are never selected, so mutants that only they reach run the whole suite, and the report lists them under *Tests that fail alone*. The logs are `isolation-*.log`. On a large suite this check is the main fixed cost of test selection; the log shows how long it took.
 - At the end the log shows how many mutants the selected tests detected and how many re-ran the whole suite.
 
 ### Parallel runs
@@ -168,7 +171,7 @@ swift-test-effectiveness /path/to/App \
   …
 ```
 
-The baseline and the check run for test selection run alone, as worker 1. Result bundles go to `<work dir>/results`; only the baseline's is kept. Timeouts still use the baseline duration, which was measured without other runs; on a loaded machine raise `--timeout-factor`.
+The baseline and the check that every selectable test can be selected run alone, as worker 1; running each test scope alone uses all workers. Result bundles go to `<work dir>/results`; only the baseline's is kept. Timeouts still use the baseline duration, which was measured without other runs; on a loaded machine raise `--timeout-factor`.
 
 `--jobs` is custom mode only: `swift test` locks `.build`, so its runs cannot overlap.
 
@@ -184,7 +187,7 @@ Posting the generated Markdown as a PR comment shows, for the changed declaratio
 
 - The project is analysed in a copy, so local path dependencies (`.package(path: "../Foo")`) do not resolve.
 - `swift test` locks `.build`, so for Swift packages the test runs (one per mutant) cannot run in parallel. Custom mode can, with [`--jobs`](#parallel-runs).
-- With test selection, a test that passes only after other tests have run (shared state, order dependence) can fail among the selected tests and make a mutant look detected. Use `--no-test-selection` for such a suite.
+- Test selection runs each test scope alone without mutations and never selects a scope that fails on its own (see [Test selection](#test-selection)), so a test that depends on other tests running first does not make a mutant look detected. Scopes that pass alone but fail only in a particular combination with other selected scopes are not detected; use `--no-test-selection` if you suspect such a suite.
 
 ## Documentation
 

@@ -106,6 +106,12 @@ public enum Reporter {
                 }
             }
         }
+        if let tests = report.testsFailingAlone, !tests.isEmpty {
+            out += "\n\(testsFailingAloneTitle) (\(tests.count))\n  \(testsFailingAloneExplanation)\n\n"
+            for test in tests {
+                out += "  \(test.test)  (\(test.timedOut ? "timed out; " : "")log: \(test.log))\n"
+            }
+        }
         if !report.skipped.isEmpty {
             out += "\nNot analyzed (\(report.skipped.count))\n"
             for skipped in report.skipped {
@@ -151,6 +157,12 @@ public enum Reporter {
                 }
             }
         }
+        if let tests = report.testsFailingAlone, !tests.isEmpty {
+            out += "\n## \(testsFailingAloneTitle)\n\n\(testsFailingAloneExplanation)\n\n"
+            for test in tests {
+                out += "- `\(test.test)`\(test.timedOut ? " (timed out)" : "") — log: `\(test.log)`\n"
+            }
+        }
         if !report.skipped.isEmpty {
             out += "\n<details><summary>Not analyzed (\(report.skipped.count))</summary>\n\n"
             for skipped in report.skipped {
@@ -162,6 +174,13 @@ public enum Reporter {
     }
 
     // MARK: - Helpers
+
+    static let testsFailingAloneTitle = "Tests that fail alone"
+
+    static let testsFailingAloneExplanation =
+        "These test scopes pass in the whole suite but fail when run on their own, without mutations: "
+        + "they depend on tests that run before them, or share state with them. "
+        + "Make each test set up what it needs. They were not used to select tests for mutants."
 
     /// For executed methods whose mutants survived: is any test about this method at all?
     static func referenceNote(_ result: MethodResult) -> String? {

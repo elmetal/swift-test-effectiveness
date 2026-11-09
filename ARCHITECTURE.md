@@ -69,6 +69,8 @@ In custom mode, `Analyzer.runMutants` runs the mutants on `--jobs` workers (`Dis
 
 A mutant then runs against those scopes first (`swift test --filter`, or `{only-testing}` expanded to `-only-testing:` in custom mode). Only if it survives does the whole suite run, so the outcome is the one the whole suite gives; the reported duration is the sum. Before the mutants, `selectableTests` runs every selector once without mutations and drops modules whose selection fails, since a failing selection (an unknown target in `xcodebuild`) would look like a detected mutant.
 
+`scopesFailingAlone` then runs each remaining selector on its own, without mutations, on the `--jobs` workers (one run per scope; skipped when there is only one scope, which the previous check already ran alone). A scope that fails alone depends on tests that run before it or shares state with them, so selecting it alone would make a mutant look detected. It is removed from the selectable set, so a mutant that only such scopes reach runs the whole suite, and it goes into `AnalysisReport.testsFailingAlone`, which `Reporter` renders as a section about the tests, separate from the per-declaration findings (`nil` when selection is off: the check did not run). This is a finding about the tests rather than a limitation of selection: tests that depend on each other's order are fragile on their own.
+
 The selection contains every test that executes the method only as far as the index sees the calls. Calls the index cannot resolve (closures stored and called later, framework callbacks) mean fewer selected tests, which costs a whole-suite run but never changes an outcome.
 
 #### Mutant schemata
