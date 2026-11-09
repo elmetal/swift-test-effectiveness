@@ -94,6 +94,39 @@ struct IntegrationTests {
         #expect(summary?.hasPrefix("Test selection: 0 mutants detected") == false)
     }
 
+    /// Custom mode with xcodebuild: coverage from the profile the baseline writes, the index the
+    /// build writes, and test selection through `{only-testing}`.
+    @Test func customModeWithXcodebuild() throws {
+        let project = Self.fixturesRoot.appendingPathComponent("ReferencedProject")
+        let xcodebuild = "-scheme ReferencedProject-Package -destination platform=macOS "
+            + "-derivedDataPath build -enableCodeCoverage YES -quiet"
+        let configuration = AnalysisConfiguration(
+            projectPath: project,
+            workDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("ste-it-custom"),
+            buildSystem: .custom(
+                sourceDirectories: ["Sources"],
+                buildCommand: "xcodebuild build-for-testing \(xcodebuild)",
+                testCommand: "xcodebuild test-without-building \(xcodebuild) {only-testing}"
+            ),
+            indexStorePath: "build/Index.noindex/DataStore",
+            coverageProfilePath: "build/Build/ProfileData",
+            coverageBinaryPaths: ["build/Build/Products"],
+            minimumTimeout: 120
+        )
+        let messages = Messages()
+        let report = try Analyzer(configuration: configuration) { messages.append($0) }.run()
+        #expect(report.coverageAvailable)
+        #expect(report.referencesAvailable)
+        let executed = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.executed) })
+        #expect(executed["Shape.area()"] == .notExecuted)
+        #expect(executed["Circle.area()"] == .notExecuted)
+        #expect(executed["Format.clamped(_:)"] == .executed)
+        let classification = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.classification) })
+        #expect(classification["RemoteRepository.count()"] == .notCovered)
+        #expect(classification["Format.percent(_:)"] == .tested)
+        #expect(messages.all.contains { $0.hasPrefix("Test selection:") && !$0.hasPrefix("Test selection: 0 mutants detected") })
+    }
+
     /// The schema of every construct in `Tests/Fixtures/EdgeCases` must compile and the baseline must pass.
     @Test func edgeCasesCompile() throws {
         let report = try analyze("EdgeCases", throwMutants: true)

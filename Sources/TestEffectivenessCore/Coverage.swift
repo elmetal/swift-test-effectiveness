@@ -50,6 +50,14 @@ public struct CoverageMap: Sendable {
         return matching.contains { $0.count > 0 }
     }
 
+    /// Combines maps exported from several binaries. A function linked into more than one binary
+    /// counts as executed if any of them executed it.
+    init(merging maps: [CoverageMap]) {
+        functionsByFile = maps.reduce(into: [:]) { result, map in
+            result.merge(map.functionsByFile) { $0 + $1 }
+        }
+    }
+
     static func normalize(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
@@ -66,5 +74,61 @@ public struct CoverageMap: Sendable {
         var count: Int
         var regions: [[Int]]
         var filenames: [String]
+    }
+}
+
+/// Finds the files `xcodebuild -enableCodeCoverage YES` writes, for custom mode.
+enum CoverageArtifacts {
+    /// `path` itself if it is a file, otherwise the most recently modified `.profdata` under it.
+    /// Profiles older than `modifiedAfter` are ignored, so a profile left over from an earlier run
+    /// is never read.
+    static func profile(at path: URL, modifiedAfter: Date) -> URL? {
+        let candidates = isDirectory(path)
+            ? files(under: path).filter { $0.pathExtension == "profdata" }
+            : [path]
+        return candidates
+            .compactMap { url in modificationDate(url).map { (url, $0) } }
+            .filter { $0.1 >= modifiedAfter }
+            .max { $0.1 < $1.1 }?.0
+    }
+
+    /// `path` itself if it is a file, otherwise every Mach-O file under it (outside `.dSYM` bundles).
+    static func binaries(at path: URL) -> [URL] {
+        guard isDirectory(path) else { return [path] }
+        return files(under: path).filter(isMachO).sorted { $0.path < $1.path }
+    }
+
+    static func isMachO(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 4), data.count == 4 else { return false }
+        let magic = data.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+        // 64-bit, 32-bit and universal binaries, in either byte order.
+        return [0xFEEDFACF, 0xCFFAEDFE, 0xFEEDFACE, 0xCEFAEDFE, 0xCAFEBABE, 0xBEBAFECA].contains(magic)
+    }
+
+    private static func files(under directory: URL) -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        ) else { return [] }
+        var result: [URL] = []
+        for case let url as URL in enumerator {
+            if url.pathExtension == "dSYM" {
+                enumerator.skipDescendants()
+                continue
+            }
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            if values?.isRegularFile == true && values?.isSymbolicLink != true { result.append(url) }
+        }
+        return result
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private static func modificationDate(_ url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 }

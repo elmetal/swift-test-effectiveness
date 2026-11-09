@@ -109,6 +109,8 @@ swift-test-effectiveness /path/to/package
 | `--no-index` | 静的参照 | コンパイラのインデックスを書き出さず、読まない。referenced 列は unknown になる |
 | `--index-store-path <path>` | 静的参照 | 読み込むインデックスストア（パッケージではビルドが書き出すものが既定。カスタムモードでは必須） |
 | `--no-coverage` | カバレッジ | カバレッジを取得せず、後段の手法を全宣言に対して実行する |
+| `--coverage-profdata <path>` | カバレッジ | カスタムモード：テストコマンドが書き出す `.profdata`、またはその最新のものを探すディレクトリ |
+| `--coverage-binary <path>` | カバレッジ | カスタムモード：カバレッジ付きでビルドしたバイナリ、またはバイナリを探すディレクトリ（複数指定可） |
 | `--throw-mutants` | 極端ミューテーション | 型指定なしの `throws` メソッドに `throw` するミュータントを追加 |
 | `--no-arid` | 極端ミューテーション | 本体がログ出力だけの `Void` メソッドも解析する（既定では対象外。[対象外](docs/ja/methods/extreme-mutation.md#対象外) を参照） |
 | `--arid-call <name>` | 極端ミューテーション | この関数の呼び出しもログ出力とみなす。例：`track`、`Analytics.shared.track`（複数可） |
@@ -132,17 +134,21 @@ swift-test-effectiveness /path/to/App \
 
 テストコマンドはミュータントごとに実行され、アクティブなミュータントは `STE_MUTANT` と `TEST_RUNNER_STE_MUTANT` の両方で渡されます（`xcodebuild test` は `TEST_RUNNER_` 付きの環境変数をテストプロセスに転送します）。
 
-各ミュータントで、まずメソッドに届くテストだけを流すには、xcodebuild の `-only-testing:` 引数を置く位置に `{only-testing}` を書き、インデックスストアを渡します（[テスト選択](#テスト選択) を参照）。
+ほかの手法には、ビルドとテスト実行が書き出すファイルが必要です。DerivedData の場所を決めてビルドし（相対パスはコピー先のプロジェクトを基準に解決します）、それぞれのファイルを渡します。
 
 ```bash
 swift-test-effectiveness /path/to/App \
   --source-dir App \
-  --build-command "xcodebuild build-for-testing -scheme App -derivedDataPath build -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
-  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
-  --index-store-path build/Index.noindex/DataStore
+  --build-command "xcodebuild build-for-testing -scheme App -derivedDataPath build -enableCodeCoverage YES -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
+  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
+  --index-store-path build/Index.noindex/DataStore \
+  --coverage-profdata build/Build/ProfileData \
+  --coverage-binary build/Build/Products
 ```
 
-カスタムモードではカバレッジを取得しないため、テストから実行されないメソッドは `not-covered` ではなく `pseudo-tested` として報告されます。referenced 列を出すには、ビルドが書き出すインデックスストアを `--index-store-path` で渡します（[テストからの静的な参照](docs/ja/methods/static-references.md#インデックスが使えないとき) を参照）。
+- `--index-store-path`：referenced 列（[テストからの静的な参照](docs/ja/methods/static-references.md#インデックスが使えないとき) を参照）と [テスト選択](#テスト選択) に使います。
+- `{only-testing}`：[テスト選択](#テスト選択) に使います。
+- `-enableCodeCoverage YES`、`--coverage-profdata`、`--coverage-binary`：executed 列に使います。ベースラインの後、ベースラインが書き出した最新の `.profdata` を読み、`--coverage-binary` の下にある Mach-O バイナリそれぞれのカバレッジを `xcrun llvm-cov export` で取り出します。カバレッジデータのないバイナリは飛ばします。カバレッジがないと、どのテストも実行しないメソッドは `not-covered` ではなく `pseudo-tested` として報告され、そのミュータントも流れます。
 
 ### テスト選択
 

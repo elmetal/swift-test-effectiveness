@@ -56,7 +56,7 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Option(name: .customLong("arid-call"), help: "Also treat calls to this function as logging, e.g. `track` or `Analytics.shared.track` (repeatable).")
     var aridCalls: [String] = []
 
-    @Flag(inversion: .prefixedNo, help: "Use code coverage to skip mutants of methods no test executes (SwiftPM only).")
+    @Flag(inversion: .prefixedNo, help: "Use code coverage to skip mutants of methods no test executes (custom mode: needs --coverage-profdata and --coverage-binary).")
     var coverage = true
 
     @Flag(inversion: .prefixedNo, help: "Read the compiler's index to report whether any test refers to each method directly.")
@@ -67,6 +67,12 @@ struct SwiftTestEffectiveness: ParsableCommand {
 
     @Flag(inversion: .prefixedNo, help: "Run each mutant against the tests that reach its method first, and against the whole suite only if it survives them. Needs the index. Custom mode: put {only-testing} in --test-command where xcodebuild's -only-testing: arguments go. SwiftPM: not with --test-filter.")
     var testSelection = true
+
+    @Option(name: .customLong("coverage-profdata"), help: "Custom mode: the .profdata the test command writes with -enableCodeCoverage YES, or a directory to search for the newest one (e.g. build/Build/ProfileData with -derivedDataPath build). Relative to the copied project.")
+    var coverageProfdata: String?
+
+    @Option(name: .customLong("coverage-binary"), help: "Custom mode: a binary built with coverage, or a directory to search for binaries (e.g. build/Build/Products). Relative to the copied project (repeatable).")
+    var coverageBinaries: [String] = []
 
     @Option(help: "Directory for the mutated copy and logs (default: <project>/.build/test-effectiveness).")
     var workDir: String?
@@ -120,6 +126,8 @@ struct SwiftTestEffectiveness: ParsableCommand {
             useCoverage: coverage,
             useIndex: index,
             indexStorePath: indexStorePath,
+            coverageProfilePath: coverageProfdata,
+            coverageBinaryPaths: coverageBinaries,
             discovery: DiscoveryOptions(
                 includeThrowMutants: throwMutants,
                 arid: arid ? AridDetector(additionalCalls: aridCalls) : nil

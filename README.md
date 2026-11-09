@@ -100,6 +100,8 @@ Options for a specific method:
 | `--no-index` | static references | Do not write or read the compiler's index; the referenced column is unknown |
 | `--index-store-path <path>` | static references | Index store to read (default for packages: the one the build writes; needed in custom mode) |
 | `--no-coverage` | coverage | Do not collect coverage; run the later methods on every declaration |
+| `--coverage-profdata <path>` | coverage | Custom mode: the `.profdata` the test command writes, or a directory to search for the newest one |
+| `--coverage-binary <path>` | coverage | Custom mode: a binary built with coverage, or a directory to search for binaries (repeatable) |
 | `--throw-mutants` | extreme mutation | Add a `throw` mutant for methods declared with untyped `throws` |
 | `--no-arid` | extreme mutation | Also mutate methods returning `Void` whose body only logs (skipped by default, see [Not targeted](docs/methods/extreme-mutation.md#not-targeted)) |
 | `--arid-call <name>` | extreme mutation | Also treat calls to this function as logging, e.g. `track` or `Analytics.shared.track` (repeatable) |
@@ -123,17 +125,21 @@ swift-test-effectiveness /path/to/App \
 
 The test command is run once per mutant, with the active mutant exported as both `STE_MUTANT` and `TEST_RUNNER_STE_MUTANT` (`xcodebuild test` forwards `TEST_RUNNER_`-prefixed variables to the test process).
 
-To run each mutant against only the tests that reach its method first, put `{only-testing}` where xcodebuild's `-only-testing:` arguments go, and pass the index store (see [Test selection](#test-selection)):
+The other methods need files that the build and the test run write. Build into a known derived data path (relative paths are resolved inside the copied project) and point the tool at them:
 
 ```bash
 swift-test-effectiveness /path/to/App \
   --source-dir App \
-  --build-command "xcodebuild build-for-testing -scheme App -derivedDataPath build -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
-  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
-  --index-store-path build/Index.noindex/DataStore
+  --build-command "xcodebuild build-for-testing -scheme App -derivedDataPath build -enableCodeCoverage YES -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
+  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
+  --index-store-path build/Index.noindex/DataStore \
+  --coverage-profdata build/Build/ProfileData \
+  --coverage-binary build/Build/Products
 ```
 
-Custom mode does not collect coverage, so methods that no test executes are reported as `pseudo-tested` rather than `not-covered`. For the referenced column, pass the index store your build writes with `--index-store-path` (see [Static test references](docs/methods/static-references.md#when-the-index-is-unavailable)).
+- `--index-store-path`: the referenced column (see [Static test references](docs/methods/static-references.md#when-the-index-is-unavailable)) and [test selection](#test-selection).
+- `{only-testing}`: [test selection](#test-selection).
+- `-enableCodeCoverage YES`, `--coverage-profdata` and `--coverage-binary`: the executed column. After the baseline, the tool reads the newest `.profdata` the baseline wrote and exports the coverage of every Mach-O binary under `--coverage-binary` with `xcrun llvm-cov export`; binaries without coverage data are skipped. Without coverage, methods that no test executes are reported as `pseudo-tested` rather than `not-covered`, and their mutants run.
 
 ### Test selection
 
