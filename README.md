@@ -107,7 +107,8 @@ Options for a specific method:
 | `--throw-mutants` | extreme mutation | Add a `throw` mutant for methods declared with untyped `throws` |
 | `--no-arid` | extreme mutation | Also mutate methods returning `Void` whose body only logs (skipped by default, see [Not targeted](docs/methods/extreme-mutation.md#not-targeted)) |
 | `--arid-call <name>` | extreme mutation | Also treat calls to this function as logging, e.g. `track` or `Analytics.shared.track` (repeatable) |
-| `--jobs <n>` | extreme mutation | Custom mode: run this many test commands at once (see [Parallel runs](#parallel-runs)) |
+| `--jobs <n>` | extreme mutation | Run this many test runs at once (see [Parallel runs](#parallel-runs)) |
+| `--no-direct-launch` | extreme mutation | Swift packages: run every test run through `swift test` instead of [starting the test bundles directly](#starting-swift-package-tests-directly) |
 | `--timeout-factor`, `--minimum-timeout` | extreme mutation | Timeout for each mutant's test run (baseline duration × factor, with a minimum in seconds) |
 | `--no-test-selection` | extreme mutation | Run the whole test suite for every mutant instead of [the tests that reach its method first](#test-selection) |
 
@@ -157,7 +158,17 @@ Each mutant run executes the test suite, so a large suite makes the analysis slo
 
 ### Parallel runs
 
-In custom mode, `--jobs <n>` runs up to `n` test commands at once, each mutant on the next free worker. Two placeholders keep the runs apart:
+`--jobs <n>` runs up to `n` test runs at once, each mutant on the next free worker. The default is one at a time: tests that share something outside their process (a file, a port, a database) can fail when two runs overlap, and a mutant then looks detected.
+
+#### Starting Swift package tests directly
+
+After the baseline, the tool starts the test bundles itself (`xctest` for XCTest, SwiftPM's `swiftpm-testing-helper` for Swift Testing) instead of running `swift test` for every run. `swift test` loads the package before it starts the tests, which takes about a second per run, and it locks `.build`, so its runs cannot overlap. Started directly, a run costs little more than the tests themselves, and `--jobs` applies.
+
+Before relying on it, the tool runs the whole suite directly once, without mutations, and checks that it passes and executes as many tests as the baseline did (`direct-launch-check.log`). If not, every run goes through `swift test`, one at a time, and the log says why. The same happens with `--test-filter` and `--no-direct-launch`.
+
+#### Custom mode
+
+Two placeholders keep the runs apart:
 
 - `{job}` becomes the worker's number, `1` to `n`. A simulator runs one test session at a time, so give each worker its own, e.g. clones named `STE-1` … `STE-n`.
 - `{result-bundle}` becomes a fresh path for the run's result bundle. xcodebuild names its default bundles by the second a run starts, so runs that start together collide; it also refuses a path that exists.
@@ -173,8 +184,6 @@ swift-test-effectiveness /path/to/App \
 
 The baseline and the check that every selectable test can be selected run alone, as worker 1; running each test scope alone uses all workers. Result bundles go to `<work dir>/results`; only the baseline's is kept. Timeouts still use the baseline duration, which was measured without other runs; on a loaded machine raise `--timeout-factor`.
 
-`--jobs` is custom mode only: `swift test` locks `.build`, so its runs cannot overlap.
-
 ### In CI
 
 ```bash
@@ -186,7 +195,7 @@ Posting the generated Markdown as a PR comment shows, for the changed declaratio
 ### Known limitations
 
 - The project is analysed in a copy, so local path dependencies (`.package(path: "../Foo")`) do not resolve.
-- `swift test` locks `.build`, so for Swift packages the test runs (one per mutant) cannot run in parallel. Custom mode can, with [`--jobs`](#parallel-runs).
+- `swift test` locks `.build`, so runs that go through it cannot overlap. For Swift packages, [`--jobs`](#parallel-runs) therefore needs the test bundles to be started directly, which `--test-filter` rules out.
 - Test selection runs each test scope alone without mutations and never selects a scope that fails on its own (see [Test selection](#test-selection)), so a test that depends on other tests running first does not make a mutant look detected. Scopes that pass alone but fail only in a particular combination with other selected scopes are not detected; use `--no-test-selection` if you suspect such a suite.
 
 ## Documentation

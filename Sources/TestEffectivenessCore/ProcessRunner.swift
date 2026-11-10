@@ -77,12 +77,17 @@ public enum ProcessRunner {
     private static func parkForTermination() -> Never {
         while true { pause() }
     }
+    /// - Parameter withoutShell: start `arguments[0]` (an absolute path) itself instead of going
+    ///   through `/bin/sh`. On macOS, `/bin/sh` is a protected binary and drops `DYLD_*` variables
+    ///   from the environment, so a command that needs them must start this way. Only on Darwin;
+    ///   ignored elsewhere.
     public static func run(
         _ arguments: [String],
         in directory: URL,
         environment: [String: String] = [:],
         timeout: Double? = nil,
-        logFile: URL? = nil
+        logFile: URL? = nil,
+        withoutShell: Bool = false
     ) throws -> ProcessResult {
         let outputURL = logFile ?? FileManager.default.temporaryDirectory
             .appendingPathComponent("ste-\(UUID().uuidString).log")
@@ -110,9 +115,17 @@ public enum ProcessRunner {
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
         posix_spawnattr_setpgroup(&attributes, 0)
 
-        // posix_spawn has no working-directory parameter; go through `/bin/sh -c 'cd … && exec …'`.
+        // posix_spawn has no portable working-directory parameter; go through
+        // `/bin/sh -c 'cd … && exec …'` unless asked not to.
         let script = "cd \(shellQuote(directory.path)) && exec " + arguments.map(shellQuote).joined(separator: " ")
-        let argv = ["/bin/sh", "-c", script]
+        var argv = ["/bin/sh", "-c", script]
+        #if canImport(Darwin)
+        if withoutShell {
+            posix_spawn_file_actions_addchdir_np(&fileActions, directory.path)
+            argv = arguments
+        }
+        #endif
+        let executable = argv[0]
         let envp = mergedEnvironment.map { "\($0.key)=\($0.value)" }
 
         let start = Date()
@@ -123,7 +136,7 @@ public enum ProcessRunner {
             if state.terminating { return nil }
             let status = withCStrings(argv) { argvPointer in
                 withCStrings(envp) { envPointer in
-                    posix_spawn(&pid, "/bin/sh", &fileActions, &attributes, argvPointer, envPointer)
+                    posix_spawn(&pid, executable, &fileActions, &attributes, argvPointer, envPointer)
                 }
             }
             if status == 0 { state.groups.insert(pid) }
@@ -136,6 +149,9 @@ public enum ProcessRunner {
 
         var exitStatus: Int32 = 0
         var timedOut = false
+        // Short commands (a test bundle started directly ends within 0.1s) should not wait for a
+        // long poll; long ones should not poll often.
+        var pollInterval: useconds_t = 500
         while true {
             let result = waitpid(pid, &exitStatus, WNOHANG)
             if result == pid { break }
@@ -146,7 +162,8 @@ public enum ProcessRunner {
                 _ = waitpid(pid, &exitStatus, 0)
                 break
             }
-            usleep(20_000)
+            usleep(pollInterval)
+            pollInterval = min(pollInterval * 2, 20_000)
         }
         let duration = Date().timeIntervalSince(start)
         let terminating = children.withLock { state in

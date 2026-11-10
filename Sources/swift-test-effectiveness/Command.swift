@@ -74,8 +74,11 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Option(name: .customLong("coverage-binary"), help: "Custom mode: a binary built with coverage, or a directory to search for binaries (e.g. build/Build/Products). Relative to the copied project (repeatable).")
     var coverageBinaries: [String] = []
 
-    @Option(help: "Custom mode: run this many test commands at once. {job} in --test-command becomes the worker's number (1…N), e.g. for a simulator per worker; {result-bundle} becomes a fresh path for -resultBundlePath.")
+    @Option(help: "Run this many test runs at once. SwiftPM: needs the tests to be started directly (the default). Custom mode: {job} in --test-command becomes the worker's number (1…N), e.g. for a simulator per worker; {result-bundle} becomes a fresh path for -resultBundlePath.")
     var jobs: Int = 1
+
+    @Flag(inversion: .prefixedNo, help: "SwiftPM: after the baseline, start the test bundles directly instead of through `swift test`, which is faster and lets runs overlap (--jobs). Not with --test-filter.")
+    var directLaunch = true
 
     @Option(help: "Directory for the mutated copy and logs (default: <project>/.build/test-effectiveness).")
     var workDir: String?
@@ -106,9 +109,6 @@ struct SwiftTestEffectiveness: ParsableCommand {
             throw ValidationError("unknown format '\(format)'")
         }
         guard jobs >= 1 else { throw ValidationError("--jobs must be at least 1") }
-        if jobs > 1 && testCommand == nil {
-            throw ValidationError("--jobs needs custom mode: `swift test` locks .build, so its runs cannot overlap")
-        }
         let customOptions = [buildCommand, testCommand].compactMap { $0 }
         if !customOptions.isEmpty || !sourceDirectories.isEmpty {
             guard buildCommand != nil, testCommand != nil, !sourceDirectories.isEmpty else {
@@ -144,7 +144,8 @@ struct SwiftTestEffectiveness: ParsableCommand {
             timeoutFactor: timeoutFactor,
             minimumTimeout: minimumTimeout,
             testSelection: testSelection,
-            jobs: jobs
+            jobs: jobs,
+            directLaunch: directLaunch
         )
         let quiet = self.quiet
         let analyzer = Analyzer(configuration: configuration) { message in

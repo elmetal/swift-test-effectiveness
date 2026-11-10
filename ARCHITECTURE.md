@@ -27,7 +27,7 @@ The pipeline is a set of shared stages around a sequence of method layers, order
 | 5 | Static reference layer: read the build's index to fill the referenced column | layer | `References.swift` |
 | 6 | Run the tests on the unmodified behaviour (baseline). Stop if they fail | shared | `Analyzer.swift` |
 | 7 | Coverage layer: read the baseline's coverage to fill the executed column | layer | `Coverage.swift` |
-| 8 | Extreme mutation layer: for each mutant of an executed method, run the tests with that mutant active, to fill the verified column | layer | `Analyzer.swift`, `ProcessRunner.swift` |
+| 8 | Extreme mutation layer: for each mutant of an executed method, run the tests with that mutant active, to fill the verified column | layer | `Analyzer.swift`, `DirectTestLauncher.swift`, `ProcessRunner.swift` |
 | 9 | Combine the columns into a finding per declaration and render the report | shared | `Models.swift` (`Classifier`), `Reporter.swift` |
 
 `--dry-run` stops after stage 2 (`Analyzer.plan()`).
@@ -57,17 +57,29 @@ In custom mode, the baseline's test command writes the profile (`xcodebuild -ena
 
 ### Extreme mutation
 
-Each mutant run executes `STE_MUTANT=<id> swift test --skip-build` (or the custom test command) with a timeout of the baseline duration × `--timeout-factor`, with `--minimum-timeout` seconds as the minimum. Mutant runs write their profile data to a separate file, so they do not overwrite the baseline coverage.
+Each mutant run executes the tests with `STE_MUTANT=<id>` in the environment: for a Swift package the test bundles, started directly (see [Direct launch](#direct-launch)), or `swift test --skip-build`; otherwise the custom test command. The timeout is the baseline duration × `--timeout-factor`, with `--minimum-timeout` seconds as the minimum. Mutant runs write their profile data elsewhere, so they do not overwrite the baseline coverage.
+
+#### Direct launch
+
+`DirectTestLauncher.swift`. `swift test --skip-build` loads the package and plans the build before it starts the tests (about a second per run) and locks `.build`. For the runs after the baseline, the tool does what `swift test` does last instead: for each test bundle in the build's bin path (`<target>.xctest` per test target, or `<Package>PackageTests.xctest` with the older build system) it starts `xctest <bundle>` for XCTest and `swiftpm-testing-helper --test-bundle-path <binary> … --testing-library swift-testing` for Swift Testing.
+
+- The processes get `DYLD_FRAMEWORK_PATH` and `DYLD_LIBRARY_PATH` for the platform's `XCTest.framework` and `Testing.framework`. `/bin/sh` is a protected binary and drops `DYLD_*`, so `ProcessRunner` starts these commands without a shell (`withoutShell`, `posix_spawn_file_actions_addchdir_np`).
+- `xctest` gets `SWIFT_TESTING_ENABLED=0`; without it, it runs the bundle's Swift Testing tests as well.
+- A selection becomes `-XCTest <Module>.<Type>,…` for the type selectors and `--filter` for Swift Testing; only the bundles of the selected modules start. Swift Testing exits with 69 when no test matches, which is not a failure.
+- A run stops at the first process that fails; the timeout is for all of its processes together.
+- `verify` runs the whole suite once without mutations and compares it with the baseline's output (`TestOutput.executedTests`: XCTest cases started, plus the tests Swift Testing reports). The launcher is used only if the run passes and executes the same number of tests: a wrong launch would otherwise make every mutant look detected (the bundle does not load) or survived (no test runs). Passes that executed no test are not started again, so a bundle with tests of one library costs one process per run.
+
+The baseline stays with `swift test`, which also merges the coverage data. With `--test-filter` (XCTest would need the list of tests to apply a regular expression) or `--no-direct-launch`, or when the check fails, every run goes through `swift test`.
 
 #### Parallel runs
 
-In custom mode, `Analyzer.runMutants` runs the mutants on `--jobs` workers (`DispatchQueue.concurrentPerform`); each worker takes the next mutant from a shared index under a `Mutex`, and results go back to their positions, so the report does not depend on scheduling. `CommandTemplate` replaces `{job}` with the worker's number and `{result-bundle}` with `<work dir>/results/<log name>.xcresult`, removed before the run and, except for the baseline's, after it. The first error stops the workers from taking more mutants. SwiftPM always runs one at a time, because `swift test` locks `.build`.
+`Analyzer.runMutants` runs the mutants on `--jobs` workers (`DispatchQueue.concurrentPerform`); each worker takes the next mutant from a shared index under a `Mutex`, and results go back to their positions, so the report does not depend on scheduling. `CommandTemplate` replaces `{job}` with the worker's number and `{result-bundle}` with `<work dir>/results/<log name>.xcresult`, removed before the run and, except for the baseline's, after it. The first error stops the workers from taking more mutants. For a Swift package, runs through `swift test` are always one at a time, because it locks `.build`; test bundles started directly use the workers.
 
 #### Test selection
 
 `TestSelection.swift`. When the static reference layer reads the index, `ReferenceColumn` also follows each test scope's calls through production code (`ReferenceResolver.referencedSymbols(scope:throughProductionCode:)`, with the same scope-restricted RTA for dynamic calls) and records, per method, the scopes that reach it as `TestSelector`s (the module from the index, the type or function name from `TestScopeFinder`).
 
-A mutant then runs against those scopes first (`swift test --filter`, or `{only-testing}` expanded to `-only-testing:` in custom mode). Only if it survives does the whole suite run, so the outcome is the one the whole suite gives; the reported duration is the sum. Before the mutants, `selectableTests` runs every selector once without mutations and drops modules whose selection fails, since a failing selection (an unknown target in `xcodebuild`) would look like a detected mutant.
+A mutant then runs against those scopes first (`-XCTest` and `--filter` for test bundles started directly, `swift test --filter` otherwise, or `{only-testing}` expanded to `-only-testing:` in custom mode). Only if it survives does the whole suite run, so the outcome is the one the whole suite gives; the reported duration is the sum. Before the mutants, `selectableTests` runs every selector once without mutations and drops modules whose selection fails, since a failing selection (an unknown target in `xcodebuild`) would look like a detected mutant.
 
 `scopesFailingAlone` then runs each remaining selector on its own, without mutations, on the `--jobs` workers (one run per scope; skipped when there is only one scope, which the previous check already ran alone). A scope that fails alone depends on tests that run before it or shares state with them, so selecting it alone would make a mutant look detected. It is removed from the selectable set, so a mutant that only such scopes reach runs the whole suite, and it goes into `AnalysisReport.testsFailingAlone`, which `Reporter` renders as a section about the tests, separate from the per-declaration findings (`nil` when selection is off: the check did not run). This is a finding about the tests rather than a limitation of selection: tests that depend on each other's order are fragile on their own.
 

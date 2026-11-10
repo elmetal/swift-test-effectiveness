@@ -466,15 +466,20 @@ enum ReferenceColumn {
 
     /// `libIndexStore.dylib` of the toolchain that `swift` belongs to.
     static func libraryPath(swift: String) -> URL? {
+        guard let resources = runtimeResourcePath(swift: swift) else { return nil }
+        let library = resources.deletingLastPathComponent().appendingPathComponent("libIndexStore.dylib")
+        return FileManager.default.fileExists(atPath: library.path) ? library : nil
+    }
+
+    /// `<toolchain>/usr/lib/swift` of the toolchain that `swift` belongs to.
+    static func runtimeResourcePath(swift: String) -> URL? {
         guard let result = try? ProcessRunner.run([swift, "-print-target-info"], in: FileManager.default.temporaryDirectory),
               result.exitCode == 0,
               let start = result.output.firstIndex(of: "{"),
               let data = String(result.output[start...]).data(using: .utf8),
               let info = try? JSONDecoder().decode(TargetInfo.self, from: data)
         else { return nil }
-        let library = URL(fileURLWithPath: info.paths.runtimeResourcePath)
-            .deletingLastPathComponent().appendingPathComponent("libIndexStore.dylib")
-        return FileManager.default.fileExists(atPath: library.path) ? library : nil
+        return URL(fileURLWithPath: info.paths.runtimeResourcePath)
     }
 
     private struct TargetInfo: Decodable {

@@ -27,7 +27,7 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 | 5 | 静的参照層：ビルドが書き出したインデックスを読み、referenced 列を埋める | 層 | `References.swift` |
 | 6 | 変更前の振る舞いでテストを実行する（ベースライン）。失敗したら中止する | 共通 | `Analyzer.swift` |
 | 7 | カバレッジ層：ベースラインのカバレッジを読み、executed 列を埋める | 層 | `Coverage.swift` |
-| 8 | 極端ミューテーション層：実行されたメソッドのミュータントごとに、そのミュータントを有効にしてテストを実行し、verified 列を埋める | 層 | `Analyzer.swift`, `ProcessRunner.swift` |
+| 8 | 極端ミューテーション層：実行されたメソッドのミュータントごとに、そのミュータントを有効にしてテストを実行し、verified 列を埋める | 層 | `Analyzer.swift`, `DirectTestLauncher.swift`, `ProcessRunner.swift` |
 | 9 | 列を宣言ごとの指摘にまとめ、レポートを生成する | 共通 | `Models.swift`（`Classifier`）, `Reporter.swift` |
 
 `--dry-run` はステージ 2（`Analyzer.plan()`）で止まります。
@@ -68,17 +68,29 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 
 ### 極端ミューテーション
 
-ミュータントごとに、`STE_MUTANT=<id> swift test --skip-build`（またはカスタムのテストコマンド）をタイムアウト付きで実行します。タイムアウトはベースラインの所要時間 × `--timeout-factor`（下限 `--minimum-timeout` 秒）です。ミュータント実行時のプロファイルデータは別ファイルに書き出すので、ベースラインのカバレッジを上書きしません。
+ミュータントごとに、環境変数 `STE_MUTANT=<id>` を付けてテストをタイムアウト付きで実行します。Swift パッケージでは直接起動したテストバンドル（[直接起動](#直接起動) を参照）か `swift test --skip-build`、それ以外ではカスタムのテストコマンドです。タイムアウトはベースラインの所要時間 × `--timeout-factor`（下限 `--minimum-timeout` 秒）です。ミュータント実行時のプロファイルデータは別の場所に書き出すので、ベースラインのカバレッジを上書きしません。
+
+#### 直接起動
+
+`DirectTestLauncher.swift`。`swift test --skip-build` は、テストを始める前にパッケージを読み込んでビルドを計画するので 1 回あたり約 1 秒かかり、`.build` もロックします。そこでベースラインより後の実行では、`swift test` が最後にしていることだけを行います。ビルドの bin パスにあるテストバンドル（テストターゲットごとの `<target>.xctest`。古いビルドシステムでは `<Package>PackageTests.xctest`）ごとに、XCTest 用に `xctest <bundle>` を、Swift Testing 用に `swiftpm-testing-helper --test-bundle-path <binary> … --testing-library swift-testing` を起動します。
+
+- プロセスには、プラットフォームの `XCTest.framework` と `Testing.framework` を読み込めるよう `DYLD_FRAMEWORK_PATH` と `DYLD_LIBRARY_PATH` を渡します。`/bin/sh` は保護されたバイナリで `DYLD_*` を落とすので、`ProcessRunner` はこれらのコマンドをシェルを通さずに起動します（`withoutShell`、`posix_spawn_file_actions_addchdir_np`）。
+- `xctest` には `SWIFT_TESTING_ENABLED=0` を渡します。渡さないと、バンドルの Swift Testing のテストも実行します。
+- テスト選択は、型のセレクタを `-XCTest <Module>.<Type>,…` に、Swift Testing 用には `--filter` に変換し、選ばれたモジュールのバンドルだけを起動します。Swift Testing は一致するテストがないと 69 で終了しますが、これは失敗として扱いません。
+- 1 回の実行は、最初に失敗したプロセスで打ち切ります。タイムアウトは、その実行のプロセスすべての合計に対するものです。
+- `verify` は、ミューテーションなしで全テストを 1 回流し、ベースラインの出力と比べます（`TestOutput.executedTests`：開始した XCTest のテストケース数と、Swift Testing が報告するテスト数の合計）。実行が通り、同じ数のテストを実行したときだけ直接起動を使います。起動のしかたが誤っていると、すべてのミュータントが検出されたように見えたり（バンドルを読み込めない）、生き残ったように見えたり（テストが 1 つも流れない）するためです。テストを 1 つも実行しなかったパスは以後起動しないので、片方のライブラリのテストしかないバンドルは 1 回の実行につき 1 プロセスで済みます。
+
+ベースラインは `swift test` のままです。カバレッジデータのマージも `swift test` が行うためです。`--test-filter`（XCTest に正規表現を適用するにはテストの一覧が必要）や `--no-direct-launch` を指定したとき、またはチェックに通らなかったときは、すべての実行を `swift test` 経由で流します。
 
 #### 並列実行
 
-カスタムモードでは、`Analyzer.runMutants` がミュータントを `--jobs` 個のワーカーで流します（`DispatchQueue.concurrentPerform`）。各ワーカーは `Mutex` で守った共有のインデックスから次のミュータントを取り、結果は元の位置に戻すので、レポートは実行順に左右されません。`CommandTemplate` は `{job}` をワーカーの番号に、`{result-bundle}` を `<作業ディレクトリ>/results/<ログ名>.xcresult` に置き換えます。このパスは実行前に削除し、ベースラインのもの以外は実行後にも削除します。エラーが起きたら、ワーカーはそれ以上ミュータントを取りません。SwiftPM では `swift test` が `.build` をロックするため、常に 1 つずつ流します。
+`Analyzer.runMutants` がミュータントを `--jobs` 個のワーカーで流します（`DispatchQueue.concurrentPerform`）。各ワーカーは `Mutex` で守った共有のインデックスから次のミュータントを取り、結果は元の位置に戻すので、レポートは実行順に左右されません。`CommandTemplate` は `{job}` をワーカーの番号に、`{result-bundle}` を `<作業ディレクトリ>/results/<ログ名>.xcresult` に置き換えます。このパスは実行前に削除し、ベースラインのもの以外は実行後にも削除します。エラーが起きたら、ワーカーはそれ以上ミュータントを取りません。Swift パッケージでは、`swift test` 経由の実行は `.build` をロックするため常に 1 つずつ流し、直接起動したテストバンドルはワーカーを使います。
 
 #### テスト選択
 
 `TestSelection.swift`。静的参照の層がインデックスを読むとき、`ReferenceColumn` は各テストスコープからの呼び出しを本番コードの中まで辿り（`ReferenceResolver.referencedSymbols(scope:throughProductionCode:)`。動的な呼び出しはスコープに限った RTA で同じように解決します）、メソッドごとに、そこに届くスコープを `TestSelector` として記録します。モジュール名はインデックスから、型名や関数名は `TestScopeFinder` から取ります。
 
-ミュータントはまずこのスコープに対して流します（`swift test --filter`、カスタムモードでは `{only-testing}` を `-only-testing:` に展開）。すり抜けた場合だけ全テストを流すので、結果は全テストを流した場合と同じです。報告する所要時間は両方の合計です。ミュータントを流す前に、`selectableTests` がすべてのセレクタをミューテーションなしで 1 回流し、選択が失敗するモジュールを外します。選択の失敗（`xcodebuild` に未知のターゲットを渡した場合など）は、ミュータントが検出されたように見えてしまうためです。
+ミュータントはまずこのスコープに対して流します（直接起動したテストバンドルでは `-XCTest` と `--filter`、そうでなければ `swift test --filter`、カスタムモードでは `{only-testing}` を `-only-testing:` に展開）。すり抜けた場合だけ全テストを流すので、結果は全テストを流した場合と同じです。報告する所要時間は両方の合計です。ミュータントを流す前に、`selectableTests` がすべてのセレクタをミューテーションなしで 1 回流し、選択が失敗するモジュールを外します。選択の失敗（`xcodebuild` に未知のターゲットを渡した場合など）は、ミュータントが検出されたように見えてしまうためです。
 
 続いて `scopesFailingAlone` が、残ったセレクタをそれぞれ単独で、ミューテーションなしで `--jobs` のワーカーで流します（スコープごとに 1 回。スコープが 1 つだけなら、前のチェックで単独で流しているので省きます）。単独で失敗するスコープは、先に流れるテストに依存しているか、ほかのテストと状態を共有しているので、単独で選ぶとミュータントが検出されたように見えてしまいます。そのようなスコープは選びうる集合から外すので、それしか届かないミュータントは全テストを流します。また `AnalysisReport.testsFailingAlone` に入れ、`Reporter` が宣言ごとの結果とは別の、テストについてのセクションとして出力します（テスト選択が無効でチェックを行わなかったときは `nil`）。これはテスト選択の制限ではなく、テストについての指摘です。実行順に依存するテストは、それ自体が壊れやすいからです。
 
