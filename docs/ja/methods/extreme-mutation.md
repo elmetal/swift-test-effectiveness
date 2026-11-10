@@ -155,6 +155,7 @@ JSON レポートでは、case を流したメソッドに `cases` が付きま�
 | `main.swift` 内の宣言 | トップレベルコードの初期化順の制約 |
 | 本体がログ出力だけの `Void` メソッド（`--no-arid` 指定時を除く） | ログメッセージをアサートすべきテストはない（[arid な本体](#arid-な本体)） |
 | `rethrows` の関数が返す `some View` | 元の本体を入れるローカル関数を `rethrows` にできない（[詳細](../../../ARCHITECTURE.ja.md#mutant-schemata)） |
+| すべてコンパイルから外れうる `#if` ブロックと並んだ式 | 暗黙に返されるかどうかがビルド構成で決まる（[詳細](../../../ARCHITECTURE.ja.md#mutant-schemata)） |
 | `View` 以外の result builder | builder がどの構文をサポートするか分からない |
 | タプル、`Result`、ジェネリック型パラメータ、ユーザー定義型、`some View` 以外の opaque 型など | 汎用的なデフォルト値がない。`--case-mutants` を指定すると、末尾が switch のメソッドは [case ごとに](#最も単純な値がない戻り値型) 解析する |
 

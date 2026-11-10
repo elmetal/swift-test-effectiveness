@@ -79,6 +79,38 @@ public struct Edge: Sendable {
     public func debugOnly() -> Int { 7 }
     #endif
 
+    /// A body that is one `#if` block returns what its active clause is.
+    public var isDebug: Bool {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
+
+    public func level() -> Int {
+        #if STE_NEVER_DEFINED
+        2
+        #elseif DEBUG
+          #if canImport(Foundation)
+          1
+          #else
+          let level = 3
+          return level
+          #endif
+        #else
+        0
+        #endif
+    }
+
+    /// Returned implicitly only because the block is compiled out.
+    public func afterInactiveBlock() -> Int {
+        #if STE_NEVER_DEFINED
+        print("never")
+        #endif
+        4
+    }
+
     #if STE_NEVER_DEFINED
     public func neverCompiled() -> Int { 8 }
     #endif

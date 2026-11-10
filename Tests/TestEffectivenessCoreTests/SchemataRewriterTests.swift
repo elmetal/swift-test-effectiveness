@@ -30,6 +30,29 @@ struct SchemataRewriterTests {
         """)
     }
 
+    /// Each clause of a body that is one `#if` block returns implicitly, active or not.
+    @Test func insertsImplicitReturnInEveryClauseOfAnIfConfigBody() {
+        let output = rewrite("""
+        var isDebug: Bool {
+            #if DEBUG
+            true
+            #else
+            false
+            #endif
+        }
+        """)
+        #expect(output == """
+        var isDebug: Bool { switch __steActiveMutant { case 1: return true; case 2: return false; case -2: __steReached(1); default: break };
+            #if DEBUG
+            return true
+            #else
+            return false
+            #endif
+        }
+
+        """)
+    }
+
     @Test func voidBodyUsesBareReturn() {
         let output = rewrite("func reset() { count = 0 }")
         #expect(output == "func reset() { switch __steActiveMutant { case 1: return; case -2: __steReached(1); default: break }; count = 0 }\n")
