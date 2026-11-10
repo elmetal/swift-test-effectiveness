@@ -13,7 +13,7 @@ struct SchemataRewriterTests {
         }
         let rewritten = SchemataRewriter.rewrite(source: source, methods: assignments)
         // Drop the footer to keep expectations short.
-        return String(rewritten.prefix(upTo: rewritten.range(of: SchemataRewriter.footer)!.lowerBound))
+        return String(rewritten.prefix(upTo: rewritten.range(of: "\n// MARK: - swift-test-effectiveness")!.lowerBound))
     }
 
     @Test func insertsSwitchAndImplicitReturn() {
@@ -23,7 +23,7 @@ struct SchemataRewriterTests {
         }
         """)
         #expect(output == """
-        func add(_ a: Int, _ b: Int) -> Int { switch __steActiveMutant { case 1: return 0; case 2: return 1; default: break };
+        func add(_ a: Int, _ b: Int) -> Int { switch __steActiveMutant { case 1: return 0; case 2: return 1; case -2: __steReached(1); default: break };
             return a + b
         }
 
@@ -32,7 +32,7 @@ struct SchemataRewriterTests {
 
     @Test func voidBodyUsesBareReturn() {
         let output = rewrite("func reset() { count = 0 }")
-        #expect(output == "func reset() { switch __steActiveMutant { case 1: return; default: break }; count = 0 }\n")
+        #expect(output == "func reset() { switch __steActiveMutant { case 1: return; case -2: __steReached(1); default: break }; count = 0 }\n")
     }
 
     @Test func resultBuilderBodyIsWrappedInIfElse() {
@@ -45,7 +45,7 @@ struct SchemataRewriterTests {
         """)
         #expect(output == """
         struct V: View {
-            var body: some View { if __steActiveMutant == 1 { EmptyView() } else {
+            var body: some View { if __steMutantIs(1) { EmptyView() } else {
                 Text("a")
              } }
         }
@@ -73,7 +73,7 @@ struct SchemataRewriterTests {
 
     @Test func handlesMultipleMethodsOnOneLine() {
         let output = rewrite("func a() -> Bool { true }; func b() -> Bool { false }")
-        #expect(output == "func a() -> Bool { switch __steActiveMutant { case 1: return true; case 2: return false; default: break }; return true }; func b() -> Bool { switch __steActiveMutant { case 3: return true; case 4: return false; default: break }; return false }\n")
+        #expect(output == "func a() -> Bool { switch __steActiveMutant { case 1: return true; case 2: return false; case -2: __steReached(1); default: break }; return true }; func b() -> Bool { switch __steActiveMutant { case 3: return true; case 4: return false; case -2: __steReached(3); default: break }; return false }\n")
     }
 
     @Test func footerReadsEnvironmentVariable() {
@@ -83,6 +83,32 @@ struct SchemataRewriterTests {
         )
         #expect(output.contains("getenv(\"STE_MUTANT\")"))
         #expect(output.contains("fileprivate let __steActiveMutant"))
+    }
+
+    /// While recording, no mutant is active, and each method has a flag at the offset of its
+    /// first mutant from the file's smallest id.
+    @Test func footerRecordsReachedMethods() {
+        let source = "func a() -> Bool { true }; func b() {}"
+        let methods = MethodDiscovery.discover(source: source, relativePath: "f.swift")
+        let output = SchemataRewriter.rewrite(source: source, methods: [
+            (methods[0], [Mutant(id: 7, mutation: .returnBool(true)), Mutant(id: 8, mutation: .returnBool(false))]),
+            (methods[1], [Mutant(id: 9, mutation: .emptyBody)]),
+        ])
+        #expect(output.contains("case -2: __steReached(7)"))
+        #expect(output.contains("case -2: __steReached(9)"))
+        #expect(output.contains("getenv(\"STE_REACHED\")"))
+        #expect(output.contains("if __steReachedFile >= 0 { return -2 }"))
+        #expect(output.contains("allocate(capacity: 3)"))
+        #expect(output.contains("__steReachedFlags + (id - 7)"))
+        #expect(output.contains("let line = Array(\"\\(id)\\n\".utf8)"))
+    }
+
+    @Test func parsesReachedMethods() {
+        #expect(ReachedMethods.parse("3\n11\n3\n") == [3, 11])
+        #expect(ReachedMethods.parse("") == [])
+        // A process that was killed while writing.
+        #expect(ReachedMethods.parse("3\n1") == [3, 1])
+        #expect(ReachedMethods.parse("3\nx\n\n8\n") == [3, 8])
     }
 
     @Test func untouchedFileIsReturnedVerbatim() {

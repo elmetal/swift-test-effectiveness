@@ -14,7 +14,7 @@ struct IntegrationTests {
 
     private func analyze(
         _ fixture: String, throwMutants: Bool = false, testSelection: Bool = true,
-        jobs: Int = 1, directLaunch: Bool = true,
+        jobs: Int = 1, directLaunch: Bool = true, rerunSurvivors: Bool = false,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws -> AnalysisReport {
         let project = Self.fixturesRoot.appendingPathComponent(fixture)
@@ -26,9 +26,36 @@ struct IntegrationTests {
             minimumTimeout: 120,
             testSelection: testSelection,
             jobs: jobs,
-            directLaunch: directLaunch
+            directLaunch: directLaunch,
+            rerunSurvivors: rerunSurvivors
         )
         return try Analyzer(configuration: configuration, log: log).run()
+    }
+
+    /// The scopes of SampleProject and ReferencedProject are their whole suites, so a mutant that
+    /// survives the scopes that execute its method is not run again. The outcomes are those of
+    /// running the whole suite for it, and for every mutant.
+    @Test(arguments: ["SampleProject", "ReferencedProject"])
+    func survivorsOfTheTestsThatExecuteTheirMethodAreNotRerun(fixture: String) throws {
+        func outcomes(_ report: AnalysisReport) -> [String: [MutantOutcome]] {
+            Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.mutants.map(\.outcome)) })
+        }
+        let messages = Messages()
+        let exact = try analyze(fixture) { messages.append($0) }
+        #expect(messages.all.contains { $0.hasPrefix("Recorded the methods each test scope executes. The scopes are the whole suite") })
+        let summary = try #require(messages.all.first { $0.hasPrefix("Test selection:") })
+        #expect(summary.contains("; 0 survived them and re-ran the whole suite;"))
+        #expect(!summary.contains("; 0 survived them, which are every test"))
+
+        let rerunMessages = Messages()
+        let rerun = try analyze(fixture, rerunSurvivors: true) { rerunMessages.append($0) }
+        let rerunSummary = try #require(rerunMessages.all.first { $0.hasPrefix("Test selection:") })
+        #expect(rerunSummary.contains("; 0 survived them, which are every test"))
+        #expect(!rerunSummary.contains("; 0 survived them and re-ran the whole suite;"))
+
+        let whole = try analyze(fixture, testSelection: false)
+        #expect(outcomes(exact) == outcomes(rerun))
+        #expect(outcomes(exact) == outcomes(whole))
     }
 
     /// Starting the test bundles directly, also on several workers, gives the outcomes of
@@ -138,6 +165,9 @@ struct IntegrationTests {
         #expect(selected.testsFailingAlone?.map(\.test) == ["RegistryTests/LookupTests"])
         #expect(selected.testsFailingAlone?.first?.timedOut == false)
         #expect(messages.all.contains { $0.hasPrefix("Test isolation: 1 test scope fails alone") })
+        // The scopes that pass alone are not the whole suite, so no survivor is final without it.
+        #expect(messages.all.contains { $0.hasSuffix("still runs the whole suite: some test scopes fail alone.") })
+        #expect(messages.all.contains { $0.hasPrefix("Test selection:") && $0.contains("; 0 survived them, which are every test") })
         let text = try Reporter.render(selected, format: .text)
         #expect(text.contains("Tests that fail alone (1)"))
     }

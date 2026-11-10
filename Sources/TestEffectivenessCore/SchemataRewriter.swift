@@ -1,3 +1,5 @@
+import Foundation
+
 /// Rewrites a source file into a *mutant schema*: every mutant is compiled into the same binary
 /// and selected at runtime through the `STE_MUTANT` environment variable, so the project is built
 /// only once (Untch, Offutt & Harrold 1993, "Mutation Analysis Using Mutant Schemata").
@@ -8,19 +10,27 @@
 ///
 /// For a method with mutants 3 and 4:
 ///
-///     func add(_ a: Int, _ b: Int) -> Int { switch __steActiveMutant { case 3: return 0; case 4: return 1; default: break };
+///     func add(_ a: Int, _ b: Int) -> Int { switch __steActiveMutant { case 3: return 0; case 4: return 1; case -2: __steReached(3); default: break };
 ///         return a + b
 ///     }
 ///
 /// For a `some View` result builder body with mutant 7:
 ///
-///     var body: some View { if __steActiveMutant == 7 { EmptyView() } else {
+///     var body: some View { if __steMutantIs(7) { EmptyView() } else {
 ///         Text("Hello")
 ///     } }
+///
+/// The same switch records which methods a test run executes: with `STE_REACHED=<file>` no mutant
+/// is active, and each method appends the id of its first mutant to the file when it is first
+/// called (see `ReachedMethods`).
 public enum SchemataRewriter {
     public static let environmentVariable = "STE_MUTANT"
+    /// Names a file to which the run appends the methods it executes.
+    public static let reachedEnvironmentVariable = "STE_REACHED"
     static let switchName = "__steActiveMutant"
     static let errorTypeName = "__STEExtremeMutationError"
+    /// The value of the switch while recording; never a mutant id.
+    static let recordingValue = -2
 
     public struct Insertion: Equatable {
         var offset: Int
@@ -45,7 +55,8 @@ public enum SchemataRewriter {
         }
         var result = String(decoding: bytes, as: UTF8.self)
         if !result.hasSuffix("\n") { result += "\n" }
-        return result + footer
+        let ids = methods.flatMap { $0.1.map(\.id) }
+        return result + footer(mutantIDs: ids.min()!...ids.max()!)
     }
 
     static func insertions(for method: DiscoveredMethod, mutants: [Mutant]) -> [Insertion] {
@@ -55,14 +66,15 @@ public enum SchemataRewriter {
             return [
                 Insertion(
                     offset: method.bodyContentStart,
-                    text: " if \(switchName) == \(mutant.id) { \(mutant.mutation.replacementStatement) } else {"
+                    text: " if __steMutantIs(\(mutant.id)) { \(mutant.mutation.replacementStatement) } else {"
                 ),
                 Insertion(offset: method.bodyContentEnd, text: " } "),
             ]
         }
         let cases = mutants.map { "case \($0.id): \($0.mutation.replacementStatement)" }.joined(separator: "; ")
+        let record = "case \(recordingValue): __steReached(\(mutants[0].id))"
         var result = [
-            Insertion(offset: method.bodyContentStart, text: " switch \(switchName) { \(cases); default: break };")
+            Insertion(offset: method.bodyContentStart, text: " switch \(switchName) { \(cases); \(record); default: break };")
         ]
         if let offset = method.implicitReturnInsertion {
             result.append(Insertion(offset: offset, text: "return "))
@@ -72,21 +84,64 @@ public enum SchemataRewriter {
 
     /// Appended at the end of every mutated file. Placed at the end (not the top) to keep line
     /// numbers stable; Swift allows imports anywhere at file scope.
-    static let footer = """
+    ///
+    /// - Parameter mutantIDs: the smallest and the largest mutant id in the file; each method has
+    ///   a flag at the offset of its first mutant, so that it is recorded once.
+    static func footer(mutantIDs: ClosedRange<Int>) -> String {
+        """
 
-    // MARK: - swift-test-effectiveness mutant schema (generated, do not commit)
-    #if canImport(Darwin)
-    import Darwin
-    #elseif canImport(Glibc)
-    import Glibc
-    #elseif canImport(Musl)
-    import Musl
-    #endif
-    nonisolated fileprivate let \(switchName): Int = {
-        guard let raw = getenv("\(environmentVariable)") else { return -1 }
-        return Int(String(cString: raw)) ?? -1
-    }()
-    nonisolated fileprivate struct \(errorTypeName): Error {}
+        // MARK: - swift-test-effectiveness mutant schema (generated, do not commit)
+        #if canImport(Darwin)
+        import Darwin
+        #elseif canImport(Glibc)
+        import Glibc
+        #elseif canImport(Musl)
+        import Musl
+        #endif
+        nonisolated fileprivate let __steReachedFile: Int32 = {
+            guard let path = getenv("\(reachedEnvironmentVariable)") else { return -1 }
+            return open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+        }()
+        nonisolated fileprivate let \(switchName): Int = {
+            if __steReachedFile >= 0 { return \(recordingValue) }
+            guard let raw = getenv("\(environmentVariable)") else { return -1 }
+            return Int(String(cString: raw)) ?? -1
+        }()
+        nonisolated(unsafe) fileprivate let __steReachedFlags: UnsafeMutablePointer<UInt8> = {
+            let flags = UnsafeMutablePointer<UInt8>.allocate(capacity: \(mutantIDs.count))
+            flags.initialize(repeating: 0, count: \(mutantIDs.count))
+            return flags
+        }()
+        nonisolated fileprivate func __steReached(_ id: Int) {
+            let flag = __steReachedFlags + (id - \(mutantIDs.lowerBound))
+            if flag.pointee != 0 { return }
+            flag.pointee = 1
+            let line = Array("\\(id)\\n".utf8)
+            _ = line.withUnsafeBufferPointer { write(__steReachedFile, $0.baseAddress, $0.count) }
+        }
+        nonisolated fileprivate func __steMutantIs(_ id: Int) -> Bool {
+            if \(switchName) == \(recordingValue) { __steReached(id) }
+            return \(switchName) == id
+        }
+        nonisolated fileprivate struct \(errorTypeName): Error {}
 
-    """
+        """
+    }
+}
+
+/// The methods a test run executed, as the mutant schema records them when
+/// `SchemataRewriter.reachedEnvironmentVariable` names a file: one line per method, with the id of
+/// the method's first mutant. Several processes of one run may append to the same file.
+enum ReachedMethods {
+    /// The ids in the file's contents. Lines that are not a number are ignored: a process that is
+    /// killed may leave a line unfinished.
+    static func parse(_ contents: String) -> Set<Int> {
+        Set(contents.split(separator: "\n").compactMap { Int($0) })
+    }
+
+    /// The ids recorded in `file`, or `nil` when the run recorded nothing.
+    static func read(_ file: URL) -> Set<Int>? {
+        guard let contents = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        return parse(contents)
+    }
 }
