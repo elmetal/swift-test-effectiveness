@@ -63,3 +63,33 @@ struct MutationOperatorsTests {
         }
     }
 }
+
+struct ExtremeMutationTests {
+    /// What each mutation puts in place of the body, and how the report names it.
+    @Test func statementAndSummaryOfEachMutation() {
+        let expected: [(ExtremeMutation, statement: String, summary: String)] = [
+            (.emptyBody, "return", "empty body"),
+            (.returnNil, "return nil", "`return nil`"),
+            (.returnBool(true), "return true", "`return true`"),
+            (.returnBool(false), "return false", "`return false`"),
+            (.returnNumber("0"), "return 0", "`return 0`"),
+            (.returnNumber("1"), "return 1", "`return 1`"),
+            (.returnString(""), "return \"\"", "`return \"\"`"),
+            (.returnString("A"), "return \"A\"", "`return \"A\"`"),
+            (.returnEmptyArray, "return []", "`return []`"),
+            (.returnEmptyData, "return Data()", "`return Data()`"),
+            (.returnEmptyDictionary, "return [:]", "`return [:]`"),
+            (.emptyView, "EmptyView()", "`EmptyView()`"),
+            (.throwError, "throw __STEExtremeMutationError()", "`throw __STEExtremeMutationError()`"),
+        ]
+        for (mutation, statement, summary) in expected {
+            #expect(mutation.replacementStatement == statement)
+            #expect(mutation.summary == summary)
+        }
+    }
+
+    /// The literal of a string mutant is written as Swift source.
+    @Test func stringLiteralIsEscaped() {
+        #expect(ExtremeMutation.returnString(#"say "hi" \ bye"#).replacementStatement == #"return "say \"hi\" \\ bye""#)
+    }
+}
