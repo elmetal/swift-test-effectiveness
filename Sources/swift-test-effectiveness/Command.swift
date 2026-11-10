@@ -86,11 +86,11 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Option(help: "Directory for the mutated copy and logs (default: <project>/.build/test-effectiveness).")
     var workDir: String?
 
-    @Option(help: "Per-mutant timeout as a multiple of the baseline test duration.")
+    @Option(help: "Timeout of a test run as a multiple of what it is expected to take: the baseline's duration for the whole suite, and for selected tests the time they took when each test scope ran alone.")
     var timeoutFactor: Double = 3
 
-    @Option(help: "Minimum per-mutant timeout in seconds.")
-    var minimumTimeout: Double = 30
+    @Option(help: "The least a test run's timeout can be, in seconds (default: 30, or 5 when the test bundles of a Swift package are started directly).")
+    var minimumTimeout: Double?
 
     @Option(help: "Report format: \(ReportFormat.allCases.map(\.rawValue).joined(separator: ", ")).")
     var format: String = ReportFormat.text.rawValue

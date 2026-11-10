@@ -56,7 +56,9 @@ public struct AnalysisConfiguration: Sendable {
     public var changedSince: String?
     public var excludePathSubstrings: [String]
     public var timeoutFactor: Double
-    public var minimumTimeout: Double
+    /// The least a run's timeout can be, in seconds. `nil`: `RunTimeout.defaultMinimum`, or
+    /// `RunTimeout.defaultMinimumForDirectLaunch` when the test bundles are started directly.
+    public var minimumTimeout: Double?
     /// Run each mutant against the tests that reach its method first (see `TestSelection`). Needs
     /// the index; SwiftPM: not with a test filter; custom mode: only with `{only-testing}` in the
     /// test command.
@@ -85,7 +87,7 @@ public struct AnalysisConfiguration: Sendable {
         changedSince: String? = nil,
         excludePathSubstrings: [String] = [],
         timeoutFactor: Double = 3,
-        minimumTimeout: Double = 30,
+        minimumTimeout: Double? = nil,
         testSelection: Bool = true,
         jobs: Int = 1,
         directLaunch: Bool = true,
@@ -188,10 +190,22 @@ public final class Analyzer: @unchecked Sendable {
         try build()
         let references = loadReferences(methods.map(\.info))
         let (baselineDuration, coverage, baselineOutput) = try runBaseline()
-        let timeout = max(baselineDuration * configuration.timeoutFactor, configuration.minimumTimeout)
-        log(String(format: "Baseline passed in %.1fs; per-mutant timeout %.0fs.", baselineDuration, timeout))
-        try setUpDirectLaunch(baselineOutput: baselineOutput, timeout: timeout)
-        let (selectable, testsFailingAlone, recorded) = try selectableTests(
+        log(String(format: "Baseline passed in %.1fs.", baselineDuration))
+        var runTimeout = RunTimeout(
+            factor: configuration.timeoutFactor,
+            minimum: configuration.minimumTimeout ?? RunTimeout.defaultMinimum, baseline: baselineDuration
+        )
+        try setUpDirectLaunch(baselineOutput: baselineOutput, timeout: runTimeout.wholeSuite)
+        if directLauncher != nil, configuration.minimumTimeout == nil {
+            runTimeout.minimum = RunTimeout.defaultMinimumForDirectLaunch
+        }
+        let timeout = runTimeout.wholeSuite
+        log(String(
+            format: "Timeout for a run of the whole suite: %.0fs; for selected tests: %.0f times what they "
+                + "took alone, at least %.0fs.",
+            timeout, runTimeout.factor, runTimeout.minimum
+        ))
+        let (selectable, testsFailingAlone, recorded, aloneDurations) = try selectableTests(
             references, baselineTests: TestOutput.executedTests(in: baselineOutput), timeout: timeout
         )
 
@@ -239,10 +253,13 @@ public final class Analyzer: @unchecked Sendable {
             let tests = selectable.flatMap { all in
                 TestSelection.tests(reaching: reaching.map { $0.intersection(all) }, all: all)
             }
+            let selectedTimeout = tests.map { tests in
+                runTimeout.selected(aloneDurations: tests.map { aloneDurations[$0] })
+            } ?? timeout
             for (mutantIndex, mutant) in mutants.enumerated() {
                 work.append(MutantRun(
                     method: methodIndex, index: mutantIndex, mutant: mutant, tests: tests,
-                    rerunsSurvivor: !selectionIsExact, name: method.info.name
+                    selectedTimeout: selectedTimeout, rerunsSurvivor: !selectionIsExact, name: method.info.name
                 ))
             }
         }
@@ -625,17 +642,17 @@ public final class Analyzer: @unchecked Sendable {
     /// - Parameter baselineTests: the number of tests the baseline executed, `0` if unknown.
     private func selectableTests(
         _ references: ReferenceAnalysis?, baselineTests: Int, timeout: Double
-    ) throws -> (Set<TestSelector>?, [TestFailingAlone]?, RecordedReach?) {
-        guard selectionRequested, let references else { return (nil, nil, nil) }
+    ) throws -> (Set<TestSelector>?, [TestFailingAlone]?, RecordedReach?, aloneDurations: [TestSelector: Double]) {
+        guard selectionRequested, let references else { return (nil, nil, nil, [:]) }
         let all = references.allTests
         guard !all.isEmpty else {
             log("Test selection: no test scopes found in the index; running the whole suite for every mutant.")
-            return (nil, nil, nil)
+            return (nil, nil, nil, [:])
         }
-        guard let selectable = try selectableModules(all, timeout: timeout) else { return (nil, nil, nil) }
+        guard let selectable = try selectableModules(all, timeout: timeout) else { return (nil, nil, nil, [:]) }
         let isolation = try scopesFailingAlone(selectable, timeout: timeout)
         let remaining = selectable.subtracting(isolation.failures.map(\.selector))
-        guard !remaining.isEmpty else { return (nil, isolation.failures.map(\.report), nil) }
+        guard !remaining.isEmpty else { return (nil, isolation.failures.map(\.report), nil, [:]) }
 
         var recorded: RecordedReach?
         if isolation.reached.values.contains(where: { !$0.isEmpty }) {
@@ -669,7 +686,7 @@ public final class Analyzer: @unchecked Sendable {
         } else if selectable.count > 1 {
             log("The test runs recorded no executed method; selecting tests from the index.")
         }
-        return (remaining, isolation.failures.map(\.report), recorded)
+        return (remaining, isolation.failures.map(\.report), recorded, isolation.durations)
     }
 
     private func selectableModules(_ all: Set<TestSelector>, timeout: Double) throws -> Set<TestSelector>? {
@@ -714,6 +731,7 @@ public final class Analyzer: @unchecked Sendable {
             var next = 0
             var failures: [Int: TestFailingAlone] = [:]
             var reached: [TestSelector: Set<Int>] = [:]
+            var durations: [TestSelector: Double] = [:]
             var executedTests = 0
             var error: (any Error)?
         }
@@ -739,6 +757,7 @@ public final class Analyzer: @unchecked Sendable {
                         let executed = TestOutput.executedTests(in: result.output)
                         state.withLock { state in
                             state.reached[scope] = reached
+                            state.durations[scope] = result.duration
                             state.executedTests += executed
                         }
                         continue
@@ -755,11 +774,11 @@ public final class Analyzer: @unchecked Sendable {
                 }
             }
         }
-        let (failures, reached, executedTests) = try state.withLock { state in
+        let (failures, reached, durations, executedTests) = try state.withLock { state in
             if let error = state.error { throw error }
             return (
                 state.failures.sorted { $0.key < $1.key }.map { (selector: ordered[$0.key], report: $0.value) },
-                state.reached, state.executedTests
+                state.reached, state.durations, state.executedTests
             )
         }
         let elapsed = String(format: "%.1fs", Date().timeIntervalSince(start))
@@ -770,13 +789,18 @@ public final class Analyzer: @unchecked Sendable {
                 + "alone without mutations and \(failures.count == 1 ? "is" : "are") not selected: "
                 + failures.map(\.report.test).joined(separator: ", ") + " (checked in \(elapsed)).")
         }
-        return IsolationOutcome(failures: failures, reached: reached, executedTests: executedTests)
+        return IsolationOutcome(
+            failures: failures, reached: reached, durations: durations, executedTests: executedTests
+        )
     }
 
     struct IsolationOutcome {
         var failures: [(selector: TestSelector, report: TestFailingAlone)] = []
         /// The methods each scope that passes alone executed, by the id of their first mutant.
         var reached: [TestSelector: Set<Int>] = [:]
+        /// How long each scope that passes alone took, with whatever its run costs besides the
+        /// tests (starting the test process, `xcodebuild`).
+        var durations: [TestSelector: Double] = [:]
         /// The number of tests the scopes that pass alone executed together.
         var executedTests = 0
     }
@@ -796,6 +820,8 @@ public final class Analyzer: @unchecked Sendable {
         var index: Int
         var mutant: Mutant
         var tests: [TestSelector]?
+        /// The timeout of the run of `tests`.
+        var selectedTimeout: Double
         /// Run the whole suite when the mutant survives `tests`.
         var rerunsSurvivor = true
         var name: String
@@ -832,8 +858,9 @@ public final class Analyzer: @unchecked Sendable {
                 do {
                     var statistics = SelectionStatistics()
                     let result = try runMutant(
-                        run.mutant, tests: run.tests, rerunsSurvivor: run.rerunsSurvivor, timeout: timeout,
-                        job: worker + 1, statistics: &statistics
+                        run.mutant, tests: run.tests, selectedTimeout: run.selectedTimeout,
+                        rerunsSurvivor: run.rerunsSurvivor, timeout: timeout, job: worker + 1,
+                        statistics: &statistics
                     )
                     state.withLock { state in
                         state.results[taken] = result
@@ -857,13 +884,13 @@ public final class Analyzer: @unchecked Sendable {
     /// Runs the selected tests first, if any, and the whole suite when the mutant survives them,
     /// unless they are known to be every test that executes the mutant's method.
     private func runMutant(
-        _ mutant: Mutant, tests: [TestSelector]?, rerunsSurvivor: Bool, timeout: Double, job: Int,
-        statistics: inout SelectionStatistics
+        _ mutant: Mutant, tests: [TestSelector]?, selectedTimeout: Double, rerunsSurvivor: Bool,
+        timeout: Double, job: Int, statistics: inout SelectionStatistics
     ) throws -> MutantResult {
         var duration = 0.0
         if let tests {
             let selected = try executeTests(
-                tests, mutant: mutant, timeout: timeout, job: job,
+                tests, mutant: mutant, timeout: selectedTimeout, job: job,
                 logFile: logDirectory.appendingPathComponent("mutant-\(mutant.id)-selected.log")
             )
             duration += selected.duration

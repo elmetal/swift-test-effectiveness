@@ -15,6 +15,7 @@ struct IntegrationTests {
     private func analyze(
         _ fixture: String, throwMutants: Bool = false, testSelection: Bool = true,
         jobs: Int = 1, directLaunch: Bool = true, rerunSurvivors: Bool = false,
+        minimumTimeout: Double? = 120,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws -> AnalysisReport {
         let project = Self.fixturesRoot.appendingPathComponent(fixture)
@@ -23,13 +24,33 @@ struct IntegrationTests {
             workDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("ste-it-\(fixture)"),
             buildSystem: .swiftPM(swiftExecutable: Self.swift, targets: [], testFilter: nil),
             discovery: DiscoveryOptions(includeThrowMutants: throwMutants),
-            minimumTimeout: 120,
+            minimumTimeout: minimumTimeout,
             testSelection: testSelection,
             jobs: jobs,
             directLaunch: directLaunch,
             rerunSurvivors: rerunSurvivors
         )
         return try Analyzer(configuration: configuration, log: log).run()
+    }
+
+    /// `Tests/Fixtures/HangingProject`: with `isDone` returning `false`, `count()` loops for ever.
+    /// The run of the one test that calls it is stopped after the short timeout of selected
+    /// tests started directly, not after the 30 seconds a run used to get at least.
+    @Test func endlessLoopIsStoppedAfterTheTimeoutOfTheSelectedTests() throws {
+        let messages = Messages()
+        let report = try analyze("HangingProject", minimumTimeout: nil) { messages.append($0) }
+        #expect(messages.all.contains { $0.hasPrefix("Starting the test bundles directly") })
+        #expect(messages.all.contains { $0.hasSuffix("times what they took alone, at least 5s.") })
+        let mutants = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.mutants) })
+        let isDone = try #require(mutants["Counter.isDone(_:)"])
+        #expect(isDone.map(\.outcome) == [.killed, .timedOut])
+        let duration = try #require(isDone[1].duration)
+        #expect(duration >= 5)
+        #expect(duration < 15)
+        #expect(mutants["Counter.count()"]?.map(\.outcome) == [.killed, .killed])
+        #expect(mutants["Counter.label()"]?.map(\.outcome) == [.killed, .killed])
+        let classification = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.classification) })
+        #expect(classification["Counter.isDone(_:)"] == .tested)
     }
 
     /// The scopes of SampleProject and ReferencedProject are their whole suites, so a mutant that
