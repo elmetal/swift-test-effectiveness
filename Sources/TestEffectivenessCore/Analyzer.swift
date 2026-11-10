@@ -61,9 +61,12 @@ public struct AnalysisConfiguration: Sendable {
     /// the index; SwiftPM: not with a test filter; custom mode: only with `{only-testing}` in the
     /// test command.
     public var testSelection: Bool
-    /// Custom mode: how many test runs execute at once. Each worker's command gets its number for
-    /// `{job}` (see `CommandTemplate`).
+    /// How many test runs execute at once. Custom mode: each worker's command gets its number for
+    /// `{job}` (see `CommandTemplate`). SwiftPM: only when the tests are started directly.
     public var jobs: Int
+    /// SwiftPM: start the test bundles directly instead of through `swift test` for every run
+    /// after the baseline (see `DirectTestLauncher`). Not with a test filter.
+    public var directLaunch: Bool
 
     public init(
         projectPath: URL,
@@ -80,7 +83,8 @@ public struct AnalysisConfiguration: Sendable {
         timeoutFactor: Double = 3,
         minimumTimeout: Double = 30,
         testSelection: Bool = true,
-        jobs: Int = 1
+        jobs: Int = 1,
+        directLaunch: Bool = true
     ) {
         self.projectPath = projectPath.standardizedFileURL
         self.workDirectory = (workDirectory
@@ -98,6 +102,7 @@ public struct AnalysisConfiguration: Sendable {
         self.minimumTimeout = minimumTimeout
         self.testSelection = testSelection
         self.jobs = max(1, jobs)
+        self.directLaunch = directLaunch
     }
 }
 
@@ -108,6 +113,12 @@ public final class Analyzer: @unchecked Sendable {
     private let log: @Sendable (String) -> Void
     /// Relative paths of the production sources found by the last `plan()`.
     private var productionFiles: [String] = []
+    /// SwiftPM: the package's name and its test targets, found by the last `plan()`.
+    private var package: (name: String, testTargets: [String])?
+    /// SwiftPM: set once starting the test bundles directly gave the baseline's results.
+    private var directLauncher: DirectTestLauncher?
+    /// SwiftPM: the answer of `swift build --show-bin-path`, which takes about a second to ask.
+    private var knownBinPath: URL?
 
     public init(configuration: AnalysisConfiguration, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.configuration = configuration
@@ -168,9 +179,10 @@ public final class Analyzer: @unchecked Sendable {
         try prepareWorkspace(assignments)
         try build()
         let references = loadReferences(methods.map(\.info))
-        let (baselineDuration, coverage) = try runBaseline()
+        let (baselineDuration, coverage, baselineOutput) = try runBaseline()
         let timeout = max(baselineDuration * configuration.timeoutFactor, configuration.minimumTimeout)
         log(String(format: "Baseline passed in %.1fs; per-mutant timeout %.0fs.", baselineDuration, timeout))
+        try setUpDirectLaunch(baselineOutput: baselineOutput, timeout: timeout)
         let (selectable, testsFailingAlone) = try selectableTests(references, timeout: timeout)
 
         // Decide up front which mutants run, so that progress can show the total.
@@ -286,6 +298,7 @@ public final class Analyzer: @unchecked Sendable {
                 var sources: [String]?
                 var module_type: String?
             }
+            var name: String
             var targets: [Target]
         }
         let description: Description
@@ -294,6 +307,7 @@ public final class Analyzer: @unchecked Sendable {
         } catch {
             throw AnalysisError.packageDescription("\(error)\n\(result.output)")
         }
+        package = (description.name, description.targets.filter { $0.type == "test" }.map(\.name))
         return description.targets
             .filter { ["library", "executable"].contains($0.type) && $0.module_type == "SwiftTarget" }
             .filter { onlyTargets.isEmpty || onlyTargets.contains($0.name) }
@@ -384,15 +398,11 @@ public final class Analyzer: @unchecked Sendable {
             if let path = configuration.indexStorePath {
                 store = URL(fileURLWithPath: path, relativeTo: copyRoot).standardizedFileURL
             } else {
-                guard let result = try? ProcessRunner.run([swift, "build", "--show-bin-path"], in: copyRoot),
-                      result.exitCode == 0,
-                      let binPath = result.output.split(separator: "\n").last
-                else {
+                guard let binPath = binPath(swift: swift) else {
                     log("Could not locate the index store; the referenced column is unavailable.")
                     return nil
                 }
-                store = URL(fileURLWithPath: binPath.trimmingCharacters(in: .whitespaces))
-                    .appendingPathComponent("index/store")
+                store = binPath.appendingPathComponent("index/store")
             }
         case .custom:
             guard let path = configuration.indexStorePath else {
@@ -423,9 +433,20 @@ public final class Analyzer: @unchecked Sendable {
         }
     }
 
+    /// SwiftPM: where the build of the copy writes its products.
+    private func binPath(swift: String) -> URL? {
+        if let knownBinPath { return knownBinPath }
+        guard let result = try? ProcessRunner.run([swift, "build", "--show-bin-path"], in: copyRoot),
+              result.exitCode == 0,
+              let path = result.output.split(separator: "\n").last
+        else { return nil }
+        knownBinPath = URL(fileURLWithPath: path.trimmingCharacters(in: .whitespaces))
+        return knownBinPath
+    }
+
     // MARK: - Baseline
 
-    private func runBaseline() throws -> (Double, CoverageMap?) {
+    private func runBaseline() throws -> (duration: Double, coverage: CoverageMap?, output: String) {
         let logFile = logDirectory.appendingPathComponent("baseline.log")
         log("Running baseline tests…")
         switch configuration.buildSystem {
@@ -436,8 +457,8 @@ public final class Analyzer: @unchecked Sendable {
             guard result.exitCode == 0 else {
                 throw AnalysisError.baselineFailed(log: logFile, tail: Self.tail(result.output))
             }
-            guard configuration.useCoverage else { return (result.duration, nil) }
-            return (result.duration, loadCoverage(swift: swift))
+            guard configuration.useCoverage else { return (result.duration, nil, result.output) }
+            return (result.duration, loadCoverage(swift: swift), result.output)
         case .custom:
             // Coverage files are at least as new as the baseline; older ones are left over.
             let start = Date().addingTimeInterval(-1)
@@ -445,8 +466,8 @@ public final class Analyzer: @unchecked Sendable {
             guard result.exitCode == 0 else {
                 throw AnalysisError.baselineFailed(log: logFile, tail: Self.tail(result.output))
             }
-            guard configuration.useCoverage else { return (result.duration, nil) }
-            return (result.duration, loadCustomCoverage(since: start))
+            guard configuration.useCoverage else { return (result.duration, nil, result.output) }
+            return (result.duration, loadCustomCoverage(since: start), result.output)
         }
     }
 
@@ -502,6 +523,42 @@ public final class Analyzer: @unchecked Sendable {
         } catch {
             log("Could not parse coverage data (\(error)); running every mutant.")
             return nil
+        }
+    }
+
+    // MARK: - Direct launch
+
+    /// SwiftPM: from here on, start the test bundles directly if that gives the baseline's
+    /// results. Otherwise every run goes through `swift test`, one at a time.
+    private func setUpDirectLaunch(baselineOutput: String, timeout: Double) throws {
+        guard case .swiftPM(let swift, _, let filter) = configuration.buildSystem else { return }
+        let fallback = "using `swift test` for every run" + (configuration.jobs > 1 ? ", one at a time" : "")
+        guard configuration.directLaunch else {
+            if configuration.jobs > 1 { log("--jobs needs the tests to be started directly; \(fallback).") }
+            return
+        }
+        guard filter == nil else {
+            if configuration.jobs > 1 { log("--jobs cannot be used with --test-filter; \(fallback).") }
+            return
+        }
+        guard let package, let binPath = binPath(swift: swift) else {
+            log("Could not locate the test bundles; \(fallback).")
+            return
+        }
+        do {
+            var launcher = try DirectTestLauncher.resolve(
+                swift: swift, binPath: binPath, packageName: package.name, testTargets: package.testTargets,
+                in: copyRoot
+            )
+            if let problem = try launcher.verify(
+                baselineOutput: baselineOutput, timeout: timeout, in: copyRoot,
+                logFile: logDirectory.appendingPathComponent("direct-launch-check.log")
+            ) { throw problem }
+            directLauncher = launcher
+            log("Starting the test bundles directly from here on (same tests as the baseline).")
+        } catch {
+            // Also a tool that cannot be started: never a reason to stop the analysis.
+            log("Cannot start the tests directly: \(error); \(fallback).")
         }
     }
 
@@ -640,9 +697,12 @@ public final class Analyzer: @unchecked Sendable {
 
     // MARK: - Mutants
 
+    /// `swift test` locks `.build`, so its runs cannot overlap; test bundles started directly can.
     private var jobs: Int {
-        if case .custom = configuration.buildSystem { return configuration.jobs }
-        return 1
+        switch configuration.buildSystem {
+        case .custom: configuration.jobs
+        case .swiftPM: directLauncher == nil ? 1 : configuration.jobs
+        }
     }
 
     struct MutantRun {
@@ -749,6 +809,11 @@ public final class Analyzer: @unchecked Sendable {
         }
         switch configuration.buildSystem {
         case .swiftPM(let swift, _, let filter):
+            if let directLauncher {
+                return try directLauncher.run(
+                    tests: tests, environment: environment, timeout: timeout, in: copyRoot, logFile: logFile
+                )
+            }
             // Keep the baseline's coverage data.
             environment["LLVM_PROFILE_FILE"] = logDirectory.appendingPathComponent("mutant.profraw").path
             var arguments = testArguments(swift: swift, filter: filter)

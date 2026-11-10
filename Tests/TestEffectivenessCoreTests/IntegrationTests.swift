@@ -14,6 +14,7 @@ struct IntegrationTests {
 
     private func analyze(
         _ fixture: String, throwMutants: Bool = false, testSelection: Bool = true,
+        jobs: Int = 1, directLaunch: Bool = true,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws -> AnalysisReport {
         let project = Self.fixturesRoot.appendingPathComponent(fixture)
@@ -23,9 +24,34 @@ struct IntegrationTests {
             buildSystem: .swiftPM(swiftExecutable: Self.swift, targets: [], testFilter: nil),
             discovery: DiscoveryOptions(includeThrowMutants: throwMutants),
             minimumTimeout: 120,
-            testSelection: testSelection
+            testSelection: testSelection,
+            jobs: jobs,
+            directLaunch: directLaunch
         )
         return try Analyzer(configuration: configuration, log: log).run()
+    }
+
+    /// Starting the test bundles directly, also on several workers, gives the outcomes of
+    /// `swift test`: with Swift Testing tests (SampleProject), XCTest tests (ReferencedProject)
+    /// and a scope that fails alone (OrderDependentProject).
+    @Test(arguments: ["SampleProject", "ReferencedProject", "OrderDependentProject"])
+    func directLaunchKeepsOutcomes(fixture: String) throws {
+        func outcomes(_ report: AnalysisReport) -> [String: [MutantOutcome]] {
+            Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.mutants.map(\.outcome)) })
+        }
+        let messages = Messages()
+        let direct = try analyze(fixture, jobs: 4) { messages.append($0) }
+        #expect(messages.all.contains { $0.hasPrefix("Starting the test bundles directly") })
+        #expect(messages.all.contains { $0.hasSuffix("mutants with 4 jobs.") })
+
+        let throughSwiftTest = Messages()
+        let reference = try analyze(fixture, jobs: 4, directLaunch: false) { throughSwiftTest.append($0) }
+        #expect(!throughSwiftTest.all.contains { $0.hasPrefix("Starting the test bundles directly") })
+        #expect(throughSwiftTest.all.contains { $0.hasPrefix("--jobs needs the tests to be started directly") })
+
+        #expect(outcomes(direct) == outcomes(reference))
+        #expect(direct.testsFailingAlone?.map(\.test) == reference.testsFailingAlone?.map(\.test))
+        #expect(direct.methods.map(\.executed) == reference.methods.map(\.executed))
     }
 
     @Test func sampleProjectClassification() throws {
