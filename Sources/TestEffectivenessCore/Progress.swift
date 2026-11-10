@@ -1,6 +1,5 @@
 import Foundation
 
-
 /// Progress lines for the mutant runs: `[3/40] Calculator.add(_:_:): `return 0` (about 1m 10s left)`.
 ///
 /// The remaining time is the average duration of the finished runs times the runs left. Before the

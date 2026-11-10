@@ -1,6 +1,5 @@
 import Foundation
 
-
 /// A position in a source file. Lines and columns are 1-based; columns count UTF-8 bytes,
 /// matching both SwiftSyntax's `SourceLocationConverter` and llvm-cov.
 public struct SourcePosition: Codable, Hashable, Sendable, Comparable {
