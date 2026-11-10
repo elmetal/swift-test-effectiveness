@@ -139,7 +139,7 @@ struct MethodDiscoveryTests {
             nil,
         ])
         // The body stays as it is: no `return` is inserted.
-        #expect(methods.dropLast().allSatisfy { $0.implicitReturnInsertion == nil })
+        #expect(methods.dropLast().allSatisfy { $0.implicitReturnInsertions.isEmpty })
     }
 
     /// With an explicit `return` the builder is off, so the `if`/`else` of the result builder
@@ -191,6 +191,112 @@ struct MethodDiscoveryTests {
         func void() { print("x") }
         func closure() -> [Int] { [1].map { x in return x } }
         """)
-        #expect(methods.map { $0.implicitReturnInsertion != nil } == [true, true, false, false, false, false, true])
+        #expect(methods.map { !$0.implicitReturnInsertions.isEmpty } == [true, true, false, false, false, false, true])
+    }
+
+    /// A body that is one `#if` block returns what its active clause is, so each clause that is a
+    /// single expression needs its `return`.
+    @Test func implicitReturnIsDetectedInEveryClauseOfASingleIfConfigBlock() {
+        let source = """
+        func both() -> Int {
+            #if DEBUG
+            1
+            #else
+            0
+            #endif
+        }
+        func nested() -> String {
+            #if os(iOS)
+              #if DEBUG
+              "a"
+              #else
+              "b"
+              #endif
+            #elseif os(macOS)
+            "c"
+            #endif
+        }
+        func mixed() -> Int {
+            #if DEBUG
+            if flag { 1 } else { 2 }
+            #elseif TRACE
+            #else
+            let x = 1
+            return x
+            #endif
+        }
+        func explicit() -> Int {
+            #if DEBUG
+            return 1
+            #else
+            fatalError()
+            #endif
+        }
+        func void() {
+            #if DEBUG
+            log()
+            #endif
+        }
+        """
+        let methods = discover(source)
+        let lines = methods.map { method in
+            method.implicitReturnInsertions.map { offset in
+                source.utf8.prefix(offset).count { $0 == UInt8(ascii: "\n") } + 1
+            }
+        }
+        #expect(lines == [[3, 5], [11, 13, 16], [21], [], []])
+        #expect(methods.allSatisfy { !$0.mutations.isEmpty })
+    }
+
+    /// Among several statements an expression is returned implicitly only when the `#if` blocks
+    /// around it leave nothing, which the build decides: `return ` would be wrong either way.
+    @Test func skipsBodiesWhoseImplicitReturnDependsOnTheBuildConfiguration() {
+        let methods = discover("""
+        func afterBlock() -> Int {
+            #if TRACE
+            log()
+            #endif
+            1
+        }
+        func twoBlocks() -> Int {
+            #if os(iOS)
+            1
+            #endif
+            #if os(macOS)
+            2
+            #endif
+        }
+        func inClause() -> Int {
+            #if DEBUG
+              #if TRACE
+              log()
+              #endif
+              1
+            #else
+            0
+            #endif
+        }
+        func returning() -> Int {
+            #if TRACE
+            log()
+            #endif
+            return 1
+        }
+        func void() {
+            #if TRACE
+            log()
+            #endif
+            reset()
+        }
+        var body: some View {
+            #if TRACE
+            Banner()
+            #endif
+            Text("a")
+        }
+        """)
+        let reason = "`#if` in the body decides whether its value is returned implicitly"
+        #expect(methods.map { $0.decision == .skip(reason: reason) } == [true, true, true, false, false, false])
+        #expect(methods.allSatisfy { $0.implicitReturnInsertions.isEmpty })
     }
 }

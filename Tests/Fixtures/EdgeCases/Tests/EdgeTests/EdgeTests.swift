@@ -8,6 +8,9 @@ import Testing
     #expect(edge.ifExpression(true) == 1)
     #expect(edge.switchStatement(.b) == 2)
     #expect(try edge.tryExpression() == 1)
+    #expect(edge.isDebug)
+    #expect(edge.level() == 1)
+    #expect(edge.afterInactiveBlock() == 4)
     #expect(await Counter().next() == 1)
 }
 

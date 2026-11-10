@@ -112,9 +112,7 @@ public enum SchemataRewriter {
             ]
         }
         var result = [Insertion(offset: method.bodyContentStart, text: mutantSwitch(mutants))]
-        if let offset = method.implicitReturnInsertion {
-            result.append(Insertion(offset: offset, text: "return "))
-        }
+        result += method.implicitReturnInsertions.map { Insertion(offset: $0, text: "return ") }
         return result
     }
 

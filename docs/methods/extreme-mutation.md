@@ -155,6 +155,7 @@ In the JSON report a method whose cases ran has `cases`: for each case with muta
 | declarations in `main.swift` | top-level code initialisation order |
 | methods returning `Void` whose body only logs (unless `--no-arid`) | no test should assert on a log message ([arid bodies](#arid-bodies)) |
 | `some View` returned from a `rethrows` function | the local function that keeps the original body cannot be `rethrows` ([details](../../ARCHITECTURE.md#mutant-schemata)) |
+| an expression next to `#if` blocks that may all be compiled out | whether it is returned implicitly depends on the build configuration ([details](../../ARCHITECTURE.md#mutant-schemata)) |
 | result builders other than `View` | unknown which constructs the builder supports |
 | tuples, `Result`, generic type parameters, user-defined types, opaque types other than `some View`, … | no general default value. With `--case-mutants`, a method that ends with a switch is analysed [case by case](#return-types-without-a-simplest-value) |
 

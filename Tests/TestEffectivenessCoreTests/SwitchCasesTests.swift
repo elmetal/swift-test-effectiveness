@@ -233,9 +233,41 @@ struct SwitchCasesTests {
         ])
         let method = discover(source)[0]
         #expect(method.decision == .mutate([]))
-        #expect(method.implicitReturnInsertion == nil)
+        #expect(method.implicitReturnInsertions.isEmpty)
         // Without case mutants the method is not analyzed, as before.
         #expect(discover(source, caseMutants: false)[0].decision == .skip(reason: "unsupported return type `Tint`"))
+    }
+
+    /// The switch is returned implicitly when the `#if` block is compiled out: statements in its
+    /// cases would be as wrong as in front of the body.
+    @Test func switchReturnedImplicitlyOnlyInSomeBuildsHasNoCaseMutants() {
+        let unsupported = discover("""
+        var tint: Tint {
+            #if TRACE
+            log()
+            #endif
+            switch self {
+            case .idle: .gray
+            case .loading: .blue
+            }
+        }
+        """)[0]
+        #expect(unsupported.cases.isEmpty)
+        #expect(unsupported.decision == .skip(reason: "unsupported return type `Tint`"))
+
+        let supported = discover("""
+        var isBusy: Bool {
+            #if TRACE
+            log()
+            #endif
+            switch self {
+            case .idle: false
+            case .loading: true
+            }
+        }
+        """)[0]
+        #expect(supported.cases.isEmpty)
+        #expect(supported.decision == .skip(reason: "`#if` in the body decides whether its value is returned implicitly"))
     }
 
     /// The body of a method returning an opaque type may be a result builder without saying so.

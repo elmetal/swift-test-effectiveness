@@ -297,6 +297,13 @@ struct IntegrationTests {
         #expect(!report.methods.contains { $0.method.name.hasSuffix(".neverCompiled()") })
         // `#if DEBUG` is active in a debug build and must still be analysed.
         #expect(report.methods.contains { $0.method.name.hasSuffix(".debugOnly()") })
+        // A body that is one `#if` block: each clause returns implicitly. One mutant of each is
+        // what the active clause returns already, and survives.
+        let ifConfig = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.classification) })
+        #expect(ifConfig["Edge.isDebug"] == .partiallyTested)
+        #expect(ifConfig["Edge.level()"] == .partiallyTested)
+        let afterBlock = report.skipped.first { $0.method.name == "Edge.afterInactiveBlock()" }
+        #expect(afterBlock?.reason == "`#if` in the body decides whether its value is returned implicitly")
         #if canImport(SwiftUI)
         // `some View` outside a result builder: the mutant renders nothing, and a `throw` mutant may follow it.
         let classification = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.classification) })

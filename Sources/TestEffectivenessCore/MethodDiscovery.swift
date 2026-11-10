@@ -10,9 +10,10 @@ public struct DiscoveredMethod: Sendable {
     var bodyContentStart: Int
     /// UTF-8 offset of the body's `}`.
     var bodyContentEnd: Int
-    /// UTF-8 offset where `return ` must be inserted to keep a single-expression body valid
-    /// once statements are placed in front of it.
-    var implicitReturnInsertion: Int?
+    /// UTF-8 offsets where `return ` must be inserted to keep a body valid whose value is returned
+    /// implicitly, once statements are placed in front of it: in front of its single expression,
+    /// or of the single expression of each clause when the body is one `#if` block.
+    var implicitReturnInsertions: [Int] = []
     var isResultBuilder: Bool
     /// Set when the method returns `some View` outside a result builder: the original body is then
     /// kept in a local function (see `SchemataRewriter`).
@@ -277,11 +278,15 @@ public enum MethodDiscovery {
                 }
             }
 
-            var implicitReturn: Int?
-            // The body of a local function keeps its implicit return.
-            if case .mutate(let mutations) = decision, !isResultBuilder, opaqueBody == nil,
-               !mutations.contains(.emptyBody) {
-                implicitReturn = implicitReturnOffset(statements)
+            // The body of a local function keeps its implicit return, and so does a result builder.
+            // `nil`: only the build configuration says whether the body returns implicitly.
+            let implicitReturns = isResultBuilder || opaqueBody != nil ? [] : implicitReturnOffsets(statements)
+            if case .mutate(let mutations) = decision, !mutations.contains(.emptyBody), implicitReturns == nil {
+                decision = .skip(reason: Self.conditionalImplicitReturn)
+            }
+            var implicitReturnInsertions: [Int] = []
+            if case .mutate(let mutations) = decision, !mutations.contains(.emptyBody) {
+                implicitReturnInsertions = implicitReturns ?? []
             }
 
             var cases: [DiscoveredCase] = []
@@ -290,6 +295,8 @@ public enum MethodDiscovery {
                 if case .mutate(let mutations) = decision {
                     cases = SwitchCases.discover(statements, mutations: mutations, arid: options.arid, line: line)
                 } else if case .skip(let reason) = decision, reason.hasPrefix(MutationOperators.unsupportedReturnType),
+                          // Statements in a case would be as wrong as in front of the body.
+                          implicitReturns != nil,
                           returnType?.tokens(viewMode: .sourceAccurate).contains(where: { $0.tokenKind == .keyword(.some) }) != true {
                     // No simplest value to return: the method has no mutant of its own, and each
                     // case does what another case does. Not for an opaque type: its body may be a
@@ -304,7 +311,7 @@ public enum MethodDiscovery {
                 decision: decision,
                 bodyContentStart: leftBrace.endPositionBeforeTrailingTrivia.utf8Offset,
                 bodyContentEnd: rightBrace.positionAfterSkippingLeadingTrivia.utf8Offset,
-                implicitReturnInsertion: implicitReturn,
+                implicitReturnInsertions: implicitReturnInsertions,
                 isResultBuilder: isResultBuilder,
                 opaqueBody: opaqueBody,
                 isConditionallyCompiled: ifConfigDepth > 0,
@@ -312,30 +319,61 @@ public enum MethodDiscovery {
             ))
         }
 
-        /// For a body consisting of a single expression that is implicitly returned, the offset
-        /// where `return ` has to be inserted.
-        private func implicitReturnOffset(_ statements: CodeBlockItemListSyntax) -> Int? {
-            guard statements.count == 1, let item = statements.first else { return nil }
+        static let conditionalImplicitReturn = "`#if` in the body decides whether its value is returned implicitly"
+
+        /// The offsets where `return ` has to be inserted in a body whose value is returned
+        /// implicitly; empty when it is not, and `nil` when that depends on the build configuration.
+        ///
+        /// The compiler decides after dropping the inactive `#if` clauses: what is left returns
+        /// implicitly when it is a single expression. Which clauses are active is only known to the
+        /// build, so:
+        ///
+        /// - A single expression is returned implicitly.
+        /// - A single `#if` block is whatever its active clause is, so every clause is looked at
+        ///   in the same way. An inactive clause is not type-checked: `return ` does no harm there.
+        /// - Among several statements, an expression is returned implicitly only when everything
+        ///   else is `#if` blocks that leave nothing, and is a statement of its own when they
+        ///   leave something. `return ` is right for one and wrong for the other, hence `nil`.
+        private func implicitReturnOffsets(_ statements: CodeBlockItemListSyntax) -> [Int]? {
+            guard statements.count == 1, let item = statements.first else {
+                // What may be left alone: the one statement that is not a block, or else any block.
+                let items = Array(statements)
+                let others = items.filter { !$0.item.is(IfConfigDeclSyntax.self) }
+                guard others.count <= 1 else { return [] }
+                let candidates = others.isEmpty ? items : others
+                return candidates.allSatisfy { implicitReturnOffsets(item: $0) == [] } ? [] : nil
+            }
+            return implicitReturnOffsets(item: item)
+        }
+
+        private func implicitReturnOffsets(item: CodeBlockItemSyntax) -> [Int]? {
             let expression: ExprSyntax
             switch item.item {
             case .expr(let expr):
                 expression = expr
             case .stmt(let stmt):
-                guard let exprStmt = stmt.as(ExpressionStmtSyntax.self) else { return nil }
+                guard let exprStmt = stmt.as(ExpressionStmtSyntax.self) else { return [] }
                 expression = exprStmt.expression
-            case .decl:
-                return nil
+            case .decl(let decl):
+                guard let ifConfig = decl.as(IfConfigDeclSyntax.self) else { return [] }
+                var offsets: [Int] = []
+                for clause in ifConfig.clauses {
+                    guard case .statements(let statements) = clause.elements else { continue }
+                    guard let inClause = implicitReturnOffsets(statements) else { return nil }
+                    offsets += inClause
+                }
+                return offsets
             }
             if expression.is(IfExprSyntax.self) || expression.is(SwitchExprSyntax.self) {
                 // An `if`/`switch` containing `return` is a statement, not an expression.
-                guard !ReturnFinder.containsReturn(Syntax(expression)) else { return nil }
+                guard !ReturnFinder.containsReturn(Syntax(expression)) else { return [] }
             }
             if let call = expression.as(FunctionCallExprSyntax.self),
                let callee = call.calledExpression.as(DeclReferenceExprSyntax.self),
                neverReturningCalls.contains(callee.baseName.text) {
-                return nil
+                return []
             }
-            return item.positionAfterSkippingLeadingTrivia.utf8Offset
+            return [item.positionAfterSkippingLeadingTrivia.utf8Offset]
         }
 
         private func hasBuilderAttribute(_ attributes: AttributeListSyntax) -> Bool {
