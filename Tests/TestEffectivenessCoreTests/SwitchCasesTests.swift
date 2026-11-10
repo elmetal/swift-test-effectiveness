@@ -2,15 +2,18 @@ import Testing
 @testable import TestEffectivenessCore
 
 struct SwitchCasesTests {
-    private func discover(_ source: String, caseMutants: Bool = true) -> [DiscoveredMethod] {
+    private func discover(_ source: String, caseMutants: Bool = true, throwMutants: Bool = false) -> [DiscoveredMethod] {
         MethodDiscovery.discover(
-            source: source, relativePath: "Sources/A/File.swift", options: DiscoveryOptions(caseMutants: caseMutants)
+            source: source, relativePath: "Sources/A/File.swift",
+            options: DiscoveryOptions(includeThrowMutants: throwMutants, caseMutants: caseMutants)
         )
     }
 
     /// `label: mutations` of each case of the first method.
-    private func cases(_ source: String) -> [String] {
-        discover(source)[0].cases.map { "\($0.label): \($0.mutations.map(\.summary).joined(separator: ", "))" }
+    private func cases(_ source: String, throwMutants: Bool = false) -> [String] {
+        discover(source, throwMutants: throwMutants)[0].cases.map {
+            "\($0.label): \($0.mutations.map(\.summary).joined(separator: ", "))"
+        }
     }
 
     /// The schema with ids assigned as `Analyzer` does: a method's mutants, then its cases'.
@@ -84,6 +87,48 @@ struct SwitchCasesTests {
             }
         }
         """) == ["case .a: ", "case .b: `return nil`"])
+    }
+
+    @Test func emptyCollectionsAreWhatTheirMutantsReturn() {
+        #expect(cases("""
+        func f(_ x: E) -> [Int] {
+            switch x {
+            case .a: return []
+            case .b: return [1]
+            }
+        }
+        """) == ["case .a: ", "case .b: `return []`"])
+        #expect(cases("""
+        func f(_ x: E) -> [String: Int] {
+            switch x {
+            case .a: [:]
+            case .b: ["b": 1]
+            }
+        }
+        """) == ["case .a: ", "case .b: `return [:]`"])
+        #expect(cases("""
+        func f(_ x: E) -> Data {
+            switch x {
+            case .a: return Data()
+            case .b: return Data([1])
+            }
+        }
+        """) == ["case .a: ", "case .b: `return Data()`"])
+    }
+
+    /// No value is what a `throw` mutant does; a case that throws already gets none.
+    @Test func throwMutantIsOnlyLeftOutOfACaseThatThrows() {
+        #expect(cases("""
+        func f(_ x: E) throws -> Int {
+            switch x {
+            case .a: return 0
+            case .b: throw Failure()
+            }
+        }
+        """, throwMutants: true) == [
+            "case .a: `return 1`, `throw __STEExtremeMutationError()`",
+            "case .b: `return 0`, `return 1`",
+        ])
     }
 
     @Test func casesThatDoNothingOrNeverReturnHaveNoMutants() {
@@ -311,6 +356,25 @@ struct SwitchCasesTests {
         }
 
         """)
+    }
+
+    @Test func otherCaseMutationNamesTheCase() {
+        let mutation = ExtremeMutation.otherCase("case .loaded")
+        #expect(mutation.summary == "as `case .loaded`")
+        // Where the other case is the next one; otherwise `DiscoveredCase.otherCaseStatement`.
+        #expect(mutation.replacementStatement == "fallthrough")
+        #expect(mutation.isOtherCase)
+        #expect(!ExtremeMutation.returnNil.isOtherCase)
+        #expect(Reporter.advice(for: mutation, method: "Calc.f()")
+            == "`Calc.f()` can do what `case .loaded` does without any test failing. Assert the result.")
+    }
+
+    /// In an `if` expression the mutant is a value, not a `return`.
+    @Test func replacementExpressionIsTheStatementWithoutReturn() {
+        #expect(ExtremeMutation.returnNil.replacementExpression == "nil")
+        #expect(ExtremeMutation.returnString("A").replacementExpression == "\"A\"")
+        #expect(ExtremeMutation.returnEmptyDictionary.replacementExpression == "[:]")
+        #expect(ExtremeMutation.throwError.replacementExpression == "throw __STEExtremeMutationError()")
     }
 
     // MARK: Schema
