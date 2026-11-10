@@ -77,13 +77,22 @@ The baseline stays with `swift test`, which also merges the coverage data. With 
 
 #### Test selection
 
-`TestSelection.swift`. When the static reference layer reads the index, `ReferenceColumn` also follows each test scope's calls through production code (`ReferenceResolver.referencedSymbols(scope:throughProductionCode:)`, with the same scope-restricted RTA for dynamic calls) and records, per method, the scopes that reach it as `TestSelector`s (the module from the index, the type or function name from `TestScopeFinder`).
+`TestSelection.swift`. The test scopes come from the index: when the static reference layer reads it, `ReferenceColumn` lists every scope as a `TestSelector` (the module from the index, the type or function name from `TestScopeFinder`).
 
-A mutant then runs against those scopes first (`-XCTest` and `--filter` for test bundles started directly, `swift test --filter` otherwise, or `{only-testing}` expanded to `-only-testing:` in custom mode). Only if it survives does the whole suite run, so the outcome is the one the whole suite gives; the reported duration is the sum. Before the mutants, `selectableTests` runs every selector once without mutations and drops modules whose selection fails, since a failing selection (an unknown target in `xcodebuild`) would look like a detected mutant.
+Which scopes execute a method is recorded. Each run of `scopesFailingAlone` (below) gets a file in `<work dir>/reached` through `STE_REACHED`, and the mutant schema appends the methods the run executes to it (see [Mutant schemata](#mutant-schemata)); `selectableTests` turns the files into `RecordedReach.scopes`, the scopes that executed each method. When the runs record nothing, the index stands in: `ReferenceColumn` also follows each scope's calls through production code (`ReferenceResolver.referencedSymbols(scope:throughProductionCode:)`, with the same scope-restricted RTA for dynamic calls) and gives, per method, the scopes that reach it.
+
+A mutant runs against those scopes first (`-XCTest` and `--filter` for test bundles started directly, `swift test --filter` otherwise, or `{only-testing}` expanded to `-only-testing:` in custom mode). Whether a mutant that survives them also runs the whole suite depends on `RecordedReach.coversSuite`:
+
+- A test that never calls the method runs the same code with and without the mutant. So when every test of the suite belongs to a recorded scope, a mutant that survives the scopes that executed its method survives the whole suite, and it is not run again. The scopes come from the index and the test sources and could miss a test, so this holds only if every scope can be selected and passes alone, and the scopes together executed as many tests as the baseline (`TestOutput.executedTests`). `--rerun-survivors` runs the whole suite regardless.
+- Otherwise, and always with the index's scopes, the whole suite runs, so the outcome is the one the whole suite gives; the reported duration is the sum.
+
+Before the mutants, `selectableTests` runs every selector once without mutations and drops modules whose selection fails, since a failing selection (an unknown target in `xcodebuild`) would look like a detected mutant.
 
 `scopesFailingAlone` then runs each remaining selector on its own, without mutations, on the `--jobs` workers (one run per scope; skipped when there is only one scope, which the previous check already ran alone). A scope that fails alone depends on tests that run before it or shares state with them, so selecting it alone would make a mutant look detected. It is removed from the selectable set, so a mutant that only such scopes reach runs the whole suite, and it goes into `AnalysisReport.testsFailingAlone`, which `Reporter` renders as a section about the tests, separate from the per-declaration findings (`nil` when selection is off: the check did not run). This is a finding about the tests rather than a limitation of selection: tests that depend on each other's order are fragile on their own.
 
-The selection contains every test that executes the method only as far as the index sees the calls. Calls the index cannot resolve (closures stored and called later, framework callbacks) mean fewer selected tests, which costs a whole-suite run but never changes an outcome.
+The recorded scopes are what ran when each scope ran alone. Two things can make the whole suite differ, and they are the limits of skipping it: a scope that executes a method only after other tests ran, and a test that fails because of state a mutant made an earlier test leave behind, without calling the method itself. Both are tests that depend on each other; `--rerun-survivors` is for suites that have them.
+
+The index's scopes contain every test that executes the method only as far as the index sees the calls. Calls the index cannot resolve (closures stored and called later, framework callbacks) mean fewer selected tests, which costs a whole-suite run but never changes an outcome.
 
 #### Mutant schemata
 
@@ -96,12 +105,12 @@ func add(_ a: Int, _ b: Int) -> Int {
 }
 
 // Mutant schema
-func add(_ a: Int, _ b: Int) -> Int { switch __steActiveMutant { case 1: return 0; case 2: return 1; default: break };
+func add(_ a: Int, _ b: Int) -> Int { switch __steActiveMutant { case 1: return 0; case 2: return 1; case -2: __steReached(1); default: break };
     return a + b
 }
 
 // Result builder body
-var body: some View { if __steActiveMutant == 7 { EmptyView() } else {
+var body: some View { if __steMutantIs(7) { EmptyView() } else {
     Text("Hello")
 } }
 ```
@@ -111,6 +120,7 @@ Invariants the rewriter must keep:
 - **Line numbers match the original source.** All insertions are made within existing lines. Coverage (llvm-cov function regions start at the body's `{`) therefore maps directly onto the original declarations, and compiler diagnostics point at the same lines as the original. Insertions only ever shift columns to the right, which `CoverageMap.wasExecuted` relies on when several functions start on one line. Any other layer that rewrites the copy must keep this invariant too.
 - **Single-expression bodies get an explicit `return`.** The same applies to `if`/`switch` expressions, unless they contain `return` statements, in which case they are statements.
 - **The switch is per file.** `__steActiveMutant` is generated at the end of each file as a `nonisolated fileprivate let` read with `getenv`. No build settings or project files need changing, and it works in modules using `defaultIsolation(MainActor.self)`.
+- **The switch also records.** With `STE_REACHED=<file>` in the environment, no mutant is active and the switch has the value `-2`: the `case -2` of each method (`__steMutantIs` in a result builder) calls `__steReached` with the id of the method's first mutant, which appends the id as a line to the file the first time the method runs. A per-file byte per mutant id remembers what was written; the write is one `write(2)` to a descriptor opened with `O_APPEND`, so the processes and threads of a run can share the file and a crash loses nothing. Without `STE_REACHED` the extra case costs nothing.
 
 Consequences for which declarations can be mutated (see [Not targeted](docs/methods/extreme-mutation.md#not-targeted)):
 
@@ -118,7 +128,7 @@ Consequences for which declarations can be mutated (see [Not targeted](docs/meth
 - In `main.swift`, top-level code runs in order, so a method could run before the switch is initialised.
 - `some View` outside a result builder would need the same concrete type on both branches of the inserted check.
 
-In custom mode, the active mutant is exported as both `STE_MUTANT` and `TEST_RUNNER_STE_MUTANT`, because `xcodebuild test` forwards `TEST_RUNNER_`-prefixed variables to the test process.
+In custom mode, the active mutant is exported as both `STE_MUTANT` and `TEST_RUNNER_STE_MUTANT`, because `xcodebuild test` forwards `TEST_RUNNER_`-prefixed variables to the test process. `STE_REACHED` is exported the same way.
 
 ## Tests
 

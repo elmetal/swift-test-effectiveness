@@ -67,6 +67,10 @@ public struct AnalysisConfiguration: Sendable {
     /// SwiftPM: start the test bundles directly instead of through `swift test` for every run
     /// after the baseline (see `DirectTestLauncher`). Not with a test filter.
     public var directLaunch: Bool
+    /// Run a mutant that survives the tests that execute its method against the whole suite as
+    /// well, even when those tests are known to be every test that executes it (see
+    /// `RecordedReach`).
+    public var rerunSurvivors: Bool
 
     public init(
         projectPath: URL,
@@ -84,7 +88,8 @@ public struct AnalysisConfiguration: Sendable {
         minimumTimeout: Double = 30,
         testSelection: Bool = true,
         jobs: Int = 1,
-        directLaunch: Bool = true
+        directLaunch: Bool = true,
+        rerunSurvivors: Bool = false
     ) {
         self.projectPath = projectPath.standardizedFileURL
         self.workDirectory = (workDirectory
@@ -103,6 +108,7 @@ public struct AnalysisConfiguration: Sendable {
         self.testSelection = testSelection
         self.jobs = max(1, jobs)
         self.directLaunch = directLaunch
+        self.rerunSurvivors = rerunSurvivors
     }
 }
 
@@ -127,6 +133,8 @@ public final class Analyzer: @unchecked Sendable {
 
     private var copyRoot: URL { configuration.workDirectory.appendingPathComponent("project") }
     private var logDirectory: URL { configuration.workDirectory.appendingPathComponent("logs") }
+    /// The files the test runs without mutations record the methods they execute in.
+    private var reachedDirectory: URL { configuration.workDirectory.appendingPathComponent("reached") }
 
     /// Discovers methods and their mutants without building or running anything.
     public func plan() throws -> (methods: [DiscoveredMethod], skipped: [SkippedMethod]) {
@@ -183,7 +191,9 @@ public final class Analyzer: @unchecked Sendable {
         let timeout = max(baselineDuration * configuration.timeoutFactor, configuration.minimumTimeout)
         log(String(format: "Baseline passed in %.1fs; per-mutant timeout %.0fs.", baselineDuration, timeout))
         try setUpDirectLaunch(baselineOutput: baselineOutput, timeout: timeout)
-        let (selectable, testsFailingAlone) = try selectableTests(references, timeout: timeout)
+        let (selectable, testsFailingAlone, recorded) = try selectableTests(
+            references, baselineTests: TestOutput.executedTests(in: baselineOutput), timeout: timeout
+        )
 
         // Decide up front which mutants run, so that progress can show the total.
         var planned: [(method: DiscoveredMethod, mutants: [Mutant], reached: Bool?)] = []
@@ -218,15 +228,18 @@ public final class Analyzer: @unchecked Sendable {
             mutants.map { reached == false ? MutantResult(mutant: $0, outcome: .notRun) : nil }
         }
         var work: [MutantRun] = []
+        // A mutant that survives every test that executes its method survives the whole suite.
+        let selectionIsExact = recorded?.coversSuite == true && !configuration.rerunSurvivors
         for (methodIndex, (method, mutants, reached)) in planned.enumerated() where reached != false {
+            // What the scopes executed when the build recorded it; what the index says otherwise.
+            let reaching = recorded.map { $0.scopes[mutants[0].id] ?? [] } ?? references?.reachingTests[method.info]
             let tests = selectable.flatMap { all in
-                TestSelection.tests(
-                    reaching: references?.reachingTests[method.info].map { $0.intersection(all) }, all: all
-                )
+                TestSelection.tests(reaching: reaching.map { $0.intersection(all) }, all: all)
             }
             for (mutantIndex, mutant) in mutants.enumerated() {
                 work.append(MutantRun(
-                    method: methodIndex, index: mutantIndex, mutant: mutant, tests: tests, name: method.info.name
+                    method: methodIndex, index: mutantIndex, mutant: mutant, tests: tests,
+                    rerunsSurvivor: !selectionIsExact, name: method.info.name
                 ))
             }
         }
@@ -248,6 +261,7 @@ public final class Analyzer: @unchecked Sendable {
 
         if selectable != nil {
             log("Test selection: \(statistics.decidedBySelection) mutants detected by the selected tests; "
+                + "\(statistics.survivedSelection) survived them, which are every test that executes their method; "
                 + "\(statistics.reran) survived them and re-ran the whole suite; "
                 + "\(statistics.wholeSuite) ran the whole suite directly.")
         }
@@ -339,6 +353,8 @@ public final class Analyzer: @unchecked Sendable {
         try fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
         try? fileManager.removeItem(at: resultBundleDirectory)
         try fileManager.createDirectory(at: resultBundleDirectory, withIntermediateDirectories: true)
+        try? fileManager.removeItem(at: reachedDirectory)
+        try fileManager.createDirectory(at: reachedDirectory, withIntermediateDirectories: true)
 
         // Keep the copy's `.build` so later runs build incrementally and reuse dependency checkouts.
         for item in try fileManager.contentsOfDirectory(atPath: copyRoot.path) where item != ".build" {
@@ -575,14 +591,29 @@ public final class Analyzer: @unchecked Sendable {
 
     struct SelectionStatistics {
         var decidedBySelection = 0
+        /// Survived the selected tests, which are every test that executes the method.
+        var survivedSelection = 0
         var reran = 0
         var wholeSuite = 0
 
         mutating func add(_ other: SelectionStatistics) {
             decidedBySelection += other.decidedBySelection
+            survivedSelection += other.survivedSelection
             reran += other.reran
             wholeSuite += other.wholeSuite
         }
+    }
+
+    /// What the test scopes executed when each ran alone, without mutations, as the mutant schema
+    /// recorded it (see `ReachedMethods`). Unlike the index, which sees only the calls the compiler
+    /// can resolve, this is what ran.
+    struct RecordedReach {
+        /// By the id of a method's first mutant: the selectable scopes that executed the method.
+        var scopes: [Int: Set<TestSelector>] = [:]
+        /// Every test of the suite belongs to a scope that passes alone and was recorded. A mutant
+        /// that survives the scopes that execute its method then survives the whole suite: a test
+        /// that never calls the method runs the same code with and without the mutant.
+        var coversSuite = false
     }
 
     /// The tests that may be selected, or `nil` to run the whole suite for every mutant.
@@ -593,20 +624,57 @@ public final class Analyzer: @unchecked Sendable {
     /// own is never selected.
     ///
     /// Each remaining scope then runs alone (see `scopesFailingAlone`); a scope that fails is not
-    /// selected either and is returned for the report.
+    /// selected either and is returned for the report. The same runs record the methods each
+    /// scope executes.
+    ///
+    /// - Parameter baselineTests: the number of tests the baseline executed, `0` if unknown.
     private func selectableTests(
-        _ references: ReferenceAnalysis?, timeout: Double
-    ) throws -> (Set<TestSelector>?, [TestFailingAlone]?) {
-        guard selectionRequested, let references else { return (nil, nil) }
+        _ references: ReferenceAnalysis?, baselineTests: Int, timeout: Double
+    ) throws -> (Set<TestSelector>?, [TestFailingAlone]?, RecordedReach?) {
+        guard selectionRequested, let references else { return (nil, nil, nil) }
         let all = references.allTests
         guard !all.isEmpty else {
             log("Test selection: no test scopes found in the index; running the whole suite for every mutant.")
-            return (nil, nil)
+            return (nil, nil, nil)
         }
-        guard let selectable = try selectableModules(all, timeout: timeout) else { return (nil, nil) }
-        let failing = try scopesFailingAlone(selectable, timeout: timeout)
-        let remaining = selectable.subtracting(failing.map(\.selector))
-        return (remaining.isEmpty ? nil : remaining, failing.map(\.report))
+        guard let selectable = try selectableModules(all, timeout: timeout) else { return (nil, nil, nil) }
+        let isolation = try scopesFailingAlone(selectable, timeout: timeout)
+        let remaining = selectable.subtracting(isolation.failures.map(\.selector))
+        guard !remaining.isEmpty else { return (nil, isolation.failures.map(\.report), nil) }
+
+        var recorded: RecordedReach?
+        if isolation.reached.values.contains(where: { !$0.isEmpty }) {
+            var reach = RecordedReach()
+            for (scope, methods) in isolation.reached where remaining.contains(scope) {
+                for method in methods { reach.scopes[method, default: []].insert(scope) }
+            }
+            // The scopes come from the index and the test sources; a test they miss could detect
+            // a mutant that survives them. Only when they ran as many tests as the baseline is
+            // nothing left for the whole suite to add.
+            let why: String? =
+                !isolation.failures.isEmpty ? "some test scopes fail alone"
+                : remaining.count != all.count ? "some test scopes cannot be selected"
+                : baselineTests == 0 ? "the number of tests the baseline executed is unknown"
+                : isolation.executedTests != baselineTests
+                    ? "the scopes executed \(isolation.executedTests) tests alone, the baseline \(baselineTests)"
+                : nil
+            reach.coversSuite = why == nil
+            if let why {
+                log("Recorded the methods each test scope executes. A mutant that survives the scopes "
+                    + "that execute its method still runs the whole suite: \(why).")
+            } else if configuration.rerunSurvivors {
+                log("Recorded the methods each test scope executes. A mutant that survives the scopes "
+                    + "that execute its method still runs the whole suite (--rerun-survivors).")
+            } else {
+                log("Recorded the methods each test scope executes. The scopes are the whole suite "
+                    + "(\(baselineTests) tests), so a mutant that survives the scopes that execute its "
+                    + "method is not run against the whole suite.")
+            }
+            recorded = reach
+        } else if selectable.count > 1 {
+            log("The test runs recorded no executed method; selecting tests from the index.")
+        }
+        return (remaining, isolation.failures.map(\.report), recorded)
     }
 
     private func selectableModules(_ all: Set<TestSelector>, timeout: Double) throws -> Set<TestSelector>? {
@@ -639,10 +707,10 @@ public final class Analyzer: @unchecked Sendable {
     /// with the others but fails alone depends on tests that run before it or shares state with
     /// them; selected alone, it would make a mutant look detected. One run per scope; a single
     /// scope already ran alone in `selectableModules`.
-    private func scopesFailingAlone(
-        _ scopes: Set<TestSelector>, timeout: Double
-    ) throws -> [(selector: TestSelector, report: TestFailingAlone)] {
-        guard scopes.count > 1 else { return [] }
+    ///
+    /// Each run also records the methods it executes (`SchemataRewriter.reachedEnvironmentVariable`).
+    private func scopesFailingAlone(_ scopes: Set<TestSelector>, timeout: Double) throws -> IsolationOutcome {
+        guard scopes.count > 1 else { return IsolationOutcome() }
         let ordered = scopes.sorted()
         log("Running each of the \(ordered.count) test scopes alone without mutations "
             + "(\(ordered.count) runs\(jobs > 1 ? " on \(jobs) jobs" : ""))…")
@@ -650,6 +718,8 @@ public final class Analyzer: @unchecked Sendable {
         struct State {
             var next = 0
             var failures: [Int: TestFailingAlone] = [:]
+            var reached: [TestSelector: Set<Int>] = [:]
+            var executedTests = 0
             var error: (any Error)?
         }
         let state = Mutex(State())
@@ -663,11 +733,21 @@ public final class Analyzer: @unchecked Sendable {
                 guard let taken else { return }
                 let scope = ordered[taken]
                 let logFile = logDirectory.appendingPathComponent("isolation-\(taken + 1).log")
+                let reachedFile = reachedDirectory.appendingPathComponent("isolation-\(taken + 1).txt")
                 do {
                     let result = try executeTests(
-                        [scope], mutant: nil, timeout: timeout, job: worker + 1, logFile: logFile
+                        [scope], mutant: nil, timeout: timeout, job: worker + 1, logFile: logFile,
+                        reachedFile: reachedFile
                     )
-                    guard result.timedOut || result.exitCode != 0 else { continue }
+                    guard result.timedOut || result.exitCode != 0 else {
+                        let reached = ReachedMethods.read(reachedFile) ?? []
+                        let executed = TestOutput.executedTests(in: result.output)
+                        state.withLock { state in
+                            state.reached[scope] = reached
+                            state.executedTests += executed
+                        }
+                        continue
+                    }
                     let failure = TestFailingAlone(
                         test: scope.onlyTestingIdentifier, timedOut: result.timedOut, log: logFile.path
                     )
@@ -680,9 +760,12 @@ public final class Analyzer: @unchecked Sendable {
                 }
             }
         }
-        let failures = try state.withLock { state in
+        let (failures, reached, executedTests) = try state.withLock { state in
             if let error = state.error { throw error }
-            return state.failures.sorted { $0.key < $1.key }.map { (ordered[$0.key], $0.value) }
+            return (
+                state.failures.sorted { $0.key < $1.key }.map { (selector: ordered[$0.key], report: $0.value) },
+                state.reached, state.executedTests
+            )
         }
         let elapsed = String(format: "%.1fs", Date().timeIntervalSince(start))
         if failures.isEmpty {
@@ -690,9 +773,17 @@ public final class Analyzer: @unchecked Sendable {
         } else {
             log("Test isolation: \(failures.count) test \(failures.count == 1 ? "scope fails" : "scopes fail") "
                 + "alone without mutations and \(failures.count == 1 ? "is" : "are") not selected: "
-                + failures.map(\.1.test).joined(separator: ", ") + " (checked in \(elapsed)).")
+                + failures.map(\.report.test).joined(separator: ", ") + " (checked in \(elapsed)).")
         }
-        return failures
+        return IsolationOutcome(failures: failures, reached: reached, executedTests: executedTests)
+    }
+
+    struct IsolationOutcome {
+        var failures: [(selector: TestSelector, report: TestFailingAlone)] = []
+        /// The methods each scope that passes alone executed, by the id of their first mutant.
+        var reached: [TestSelector: Set<Int>] = [:]
+        /// The number of tests the scopes that pass alone executed together.
+        var executedTests = 0
     }
 
     // MARK: - Mutants
@@ -710,6 +801,8 @@ public final class Analyzer: @unchecked Sendable {
         var index: Int
         var mutant: Mutant
         var tests: [TestSelector]?
+        /// Run the whole suite when the mutant survives `tests`.
+        var rerunsSurvivor = true
         var name: String
     }
 
@@ -744,7 +837,8 @@ public final class Analyzer: @unchecked Sendable {
                 do {
                     var statistics = SelectionStatistics()
                     let result = try runMutant(
-                        run.mutant, tests: run.tests, timeout: timeout, job: worker + 1, statistics: &statistics
+                        run.mutant, tests: run.tests, rerunsSurvivor: run.rerunsSurvivor, timeout: timeout,
+                        job: worker + 1, statistics: &statistics
                     )
                     state.withLock { state in
                         state.results[taken] = result
@@ -765,9 +859,10 @@ public final class Analyzer: @unchecked Sendable {
         }
     }
 
-    /// Runs the selected tests first, if any, and the whole suite when the mutant survives them.
+    /// Runs the selected tests first, if any, and the whole suite when the mutant survives them,
+    /// unless they are known to be every test that executes the mutant's method.
     private func runMutant(
-        _ mutant: Mutant, tests: [TestSelector]?, timeout: Double, job: Int,
+        _ mutant: Mutant, tests: [TestSelector]?, rerunsSurvivor: Bool, timeout: Double, job: Int,
         statistics: inout SelectionStatistics
     ) throws -> MutantResult {
         var duration = 0.0
@@ -780,6 +875,10 @@ public final class Analyzer: @unchecked Sendable {
             if selected.timedOut || selected.exitCode != 0 {
                 statistics.decidedBySelection += 1
                 return MutantResult(mutant: mutant, outcome: Self.outcome(selected), duration: duration)
+            }
+            guard rerunsSurvivor else {
+                statistics.survivedSelection += 1
+                return MutantResult(mutant: mutant, outcome: .survived, duration: duration)
             }
             statistics.reran += 1
         } else {
@@ -798,11 +897,17 @@ public final class Analyzer: @unchecked Sendable {
     }
 
     /// Runs `tests` (`nil`: the whole suite) with `mutant` active (`nil`: none) as worker `job`.
+    /// With `reachedFile`, the run records the methods it executes there.
     private func executeTests(
         _ tests: [TestSelector]?, mutant: Mutant?, timeout: Double?, job: Int = 1, logFile: URL,
-        keepResultBundle: Bool = false
+        keepResultBundle: Bool = false, reachedFile: URL? = nil
     ) throws -> ProcessResult {
         var environment: [String: String] = [:]
+        if let reachedFile {
+            try? FileManager.default.removeItem(at: reachedFile)
+            environment[SchemataRewriter.reachedEnvironmentVariable] = reachedFile.path
+            environment["TEST_RUNNER_\(SchemataRewriter.reachedEnvironmentVariable)"] = reachedFile.path
+        }
         if let mutant {
             environment[SchemataRewriter.environmentVariable] = String(mutant.id)
             environment["TEST_RUNNER_\(SchemataRewriter.environmentVariable)"] = String(mutant.id)

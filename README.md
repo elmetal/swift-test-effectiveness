@@ -110,7 +110,8 @@ Options for a specific method:
 | `--jobs <n>` | extreme mutation | Run this many test runs at once (see [Parallel runs](#parallel-runs)) |
 | `--no-direct-launch` | extreme mutation | Swift packages: run every test run through `swift test` instead of [starting the test bundles directly](#starting-swift-package-tests-directly) |
 | `--timeout-factor`, `--minimum-timeout` | extreme mutation | Timeout for each mutant's test run (baseline duration × factor, with a minimum in seconds) |
-| `--no-test-selection` | extreme mutation | Run the whole test suite for every mutant instead of [the tests that reach its method first](#test-selection) |
+| `--no-test-selection` | extreme mutation | Run the whole test suite for every mutant instead of [the tests that execute its method](#test-selection) |
+| `--rerun-survivors` | extreme mutation | Run a mutant that survives [the tests that execute its method](#test-selection) against the whole suite as well |
 
 Exit status: `0` success, `1` pseudo-tested methods found with `--fail-on-pseudo-tested`, `2` analysis error (build failure, failing baseline, …), `128 + signal` when interrupted (`130` for Ctrl-C). On interruption the running build or test command is stopped as well.
 
@@ -127,7 +128,7 @@ swift-test-effectiveness /path/to/App \
   --test-command  "xcodebuild test-without-building -scheme App -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'"
 ```
 
-The test command is run once per mutant, with the active mutant exported as both `STE_MUTANT` and `TEST_RUNNER_STE_MUTANT` (`xcodebuild test` forwards `TEST_RUNNER_`-prefixed variables to the test process).
+The test command is run once per mutant, with the active mutant exported as both `STE_MUTANT` and `TEST_RUNNER_STE_MUTANT` (`xcodebuild test` forwards `TEST_RUNNER_`-prefixed variables to the test process). The runs that record which methods a test scope executes get the file to write to as `STE_REACHED` and `TEST_RUNNER_STE_REACHED`.
 
 The other methods need files that the build and the test run write. Build into a known derived data path (relative paths are resolved inside the copied project) and point the tool at them:
 
@@ -148,13 +149,15 @@ swift-test-effectiveness /path/to/App \
 
 ### Test selection
 
-Each mutant run executes the test suite, so a large suite makes the analysis slow. The tool therefore first runs each mutant against the tests that may execute its method, and runs the whole suite only for a mutant that survives them. A test that fails among the selected tests also fails in the whole suite, so the results are the same as running the whole suite every time; only the time changes. Most mutants are detected by the selected tests.
+Each mutant run executes the test suite, so a large suite makes the analysis slow. The tool therefore runs each mutant against the tests that execute its method. A test that never calls the method runs the same code with and without the mutant, so it cannot detect it: a mutant that survives the tests that execute its method survives the whole suite. Most mutants need only a few tests.
 
-- The selected tests are the test scopes (XCTestCase subclasses, suites, free `@Test` functions) that reach one of the method's symbols in the compiler's index, following calls through test helpers and production code. A method that no test reaches, or that every test reaches, runs the whole suite directly.
-- It needs the index. SwiftPM: on by default, but not with `--test-filter`. Custom mode: on when the test command contains `{only-testing}`, which is replaced with `'-only-testing:<module>/<Type>'` and `'-only-testing:<module>/<function>()'` arguments (and with nothing when the whole suite runs).
+- Which tests execute a method is recorded: each selectable test scope (XCTestCase subclass, suite, free `@Test` function) runs once on its own without mutations (see below), and the mutant schema writes down the methods that run executes. A method that no scope executes on its own, or that every scope executes, runs the whole suite directly.
+- A mutant that survives the selected scopes is not run again when the scopes are the whole suite: every scope can be selected and passes alone, and together they executed as many tests as the baseline. Otherwise it runs the whole suite as well, and the log says why. The test counts are read from the test output, so in custom mode they are unknown when `xcodebuild` runs with `-quiet`. `--rerun-survivors` always runs a survivor against the whole suite.
+- When the runs record nothing (for example a sandboxed test host, which cannot write the file), the selected tests are the scopes that reach one of the method's symbols in the compiler's index, following calls through test helpers and production code. The index sees only the calls the compiler can resolve, so a mutant that survives these scopes always runs the whole suite.
+- It needs the index, which lists the test scopes. SwiftPM: on by default, but not with `--test-filter`. Custom mode: on when the test command contains `{only-testing}`, which is replaced with `'-only-testing:<module>/<Type>'` and `'-only-testing:<module>/<function>()'` arguments (and with nothing when the whole suite runs).
 - Before the mutants, every selectable test runs once without mutations. If that fails, each test module is tried on its own and a module that still fails is never selected (for example a target the scheme does not contain, or a target whose name differs from its module name). The logs are `selection-check*.log`.
-- Then each selectable test scope runs once on its own, without mutations (one run per scope, on the `--jobs` workers). A scope that fails alone passes in the whole suite only because other tests ran first or share state with it; selected alone, it would fail and make a mutant look detected. Such scopes are never selected, so mutants that only they reach run the whole suite, and the report lists them under *Tests that fail alone*. The logs are `isolation-*.log`. On a large suite this check is the main fixed cost of test selection; the log shows how long it took.
-- At the end the log shows how many mutants the selected tests detected and how many re-ran the whole suite.
+- Then each selectable test scope runs once on its own, without mutations (one run per scope, on the `--jobs` workers). A scope that fails alone passes in the whole suite only because other tests ran first or share state with it; selected alone, it would fail and make a mutant look detected. Such scopes are never selected, so mutants that only they reach run the whole suite, and the report lists them under *Tests that fail alone*. The logs are `isolation-*.log`, and the methods each run executed are in `<work dir>/reached`. On a large suite this check is the main fixed cost of test selection; the log shows how long it took.
+- At the end the log shows how many mutants the selected tests detected, how many survived them without another run, and how many ran the whole suite.
 
 ### Parallel runs
 
@@ -197,6 +200,7 @@ Posting the generated Markdown as a PR comment shows, for the changed declaratio
 - The project is analysed in a copy, so local path dependencies (`.package(path: "../Foo")`) do not resolve.
 - `swift test` locks `.build`, so runs that go through it cannot overlap. For Swift packages, [`--jobs`](#parallel-runs) therefore needs the test bundles to be started directly, which `--test-filter` rules out.
 - Test selection runs each test scope alone without mutations and never selects a scope that fails on its own (see [Test selection](#test-selection)), so a test that depends on other tests running first does not make a mutant look detected. Scopes that pass alone but fail only in a particular combination with other selected scopes are not detected; use `--no-test-selection` if you suspect such a suite.
+- A mutant that survives the tests that execute its method is not run against the whole suite (see [Test selection](#test-selection)). This relies on two things: a test scope executes the same methods alone as in the whole suite, and no test detects a mutant only through state that another test left behind (for example a mutant in a cleanup method that makes a later test fail). In a suite where either does not hold, a mutant the whole suite would detect can be reported as survived; `--rerun-survivors` runs every survivor against the whole suite.
 
 ## Documentation
 

@@ -68,6 +68,9 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Flag(inversion: .prefixedNo, help: "Run each mutant against the tests that reach its method first, and against the whole suite only if it survives them. Needs the index. Custom mode: put {only-testing} in --test-command where xcodebuild's -only-testing: arguments go. SwiftPM: not with --test-filter.")
     var testSelection = true
 
+    @Flag(help: "Run a mutant that survives the tests that execute its method against the whole suite as well. By default it is not, when the test scopes that ran alone are every test of the suite.")
+    var rerunSurvivors = false
+
     @Option(name: .customLong("coverage-profdata"), help: "Custom mode: the .profdata the test command writes with -enableCodeCoverage YES, or a directory to search for the newest one (e.g. build/Build/ProfileData with -derivedDataPath build). Relative to the copied project.")
     var coverageProfdata: String?
 
@@ -145,7 +148,8 @@ struct SwiftTestEffectiveness: ParsableCommand {
             minimumTimeout: minimumTimeout,
             testSelection: testSelection,
             jobs: jobs,
-            directLaunch: directLaunch
+            directLaunch: directLaunch,
+            rerunSurvivors: rerunSurvivors
         )
         let quiet = self.quiet
         let analyzer = Analyzer(configuration: configuration) { message in
