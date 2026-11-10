@@ -50,6 +50,9 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Flag(help: "Also generate a `throw` mutant for methods declared with untyped `throws`.")
     var throwMutants = false
 
+    @Flag(help: "Also mutate each case of a switch that a method ends with, to find the cases no test verifies.")
+    var caseMutants = false
+
     @Flag(inversion: .prefixedNo, help: "Skip methods returning Void whose body only logs (print, os_log, logger.info(…), …).")
     var arid = true
 
@@ -140,7 +143,8 @@ struct SwiftTestEffectiveness: ParsableCommand {
             coverageBinaryPaths: coverageBinaries,
             discovery: DiscoveryOptions(
                 includeThrowMutants: throwMutants,
-                arid: arid ? AridDetector(additionalCalls: aridCalls) : nil
+                arid: arid ? AridDetector(additionalCalls: aridCalls) : nil,
+                caseMutants: caseMutants
             ),
             changedSince: since,
             excludePathSubstrings: excludes,
@@ -183,10 +187,16 @@ struct SwiftTestEffectiveness: ParsableCommand {
         for method in methods {
             let mutations = method.mutations.map(\.summary).joined(separator: ", ")
             print("\(method.info.file):\(method.info.declarationStart.line)  \(method.info.name)  [\(mutations)]")
+            for discovered in method.cases where !discovered.mutations.isEmpty {
+                let mutations = discovered.mutations.map(\.summary).joined(separator: ", ")
+                print("    line \(discovered.line)  \(discovered.label)  [\(mutations)]")
+            }
         }
         for skip in skipped {
             print("\(skip.method.file):\(skip.method.declarationStart.line)  \(skip.method.name)  (skipped: \(skip.reason))")
         }
-        print("\(methods.count) methods, \(methods.reduce(0) { $0 + $1.mutations.count }) mutants, \(skipped.count) skipped")
+        let caseMutants = methods.reduce(0) { $0 + $1.cases.reduce(0) { $0 + $1.mutations.count } }
+        let ofCases = caseMutants > 0 ? " and \(caseMutants) of their cases" : ""
+        print("\(methods.count) methods, \(methods.reduce(0) { $0 + $1.mutations.count }) mutants\(ofCases), \(skipped.count) skipped")
     }
 }

@@ -21,7 +21,7 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 | # | ステージ | 種類 | ファイル |
 |---|---|---|---|
 | 1 | ソースファイルを列挙する。`swift package describe` のテスト以外のターゲット、またはカスタムモードでは `--source-dir`。`--exclude` を適用する | 共通 | `Analyzer.swift` |
-| 2 | SwiftSyntax で宣言を発見し、各層がそれをどう解析するか（または対象外の理由）を決める。本体がログ出力だけの宣言もここで対象外にする（`AridDetection.swift`）。`--since` 指定時は、変更行と重なる宣言だけを残す | 共通 | `MethodDiscovery.swift`, `MutationOperators.swift`, `AridDetection.swift`, `GitDiff.swift` |
+| 2 | SwiftSyntax で宣言を発見し、各層がそれをどう解析するか（または対象外の理由）を決める。本体がログ出力だけの宣言もここで対象外にする（`AridDetection.swift`）。`--since` 指定時は、変更行と重なる宣言だけを残す | 共通 | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `AridDetection.swift`, `GitDiff.swift` |
 | 3 | プロジェクトを `<package>/.build/test-effectiveness/project` にコピーし、必要な層のためにコピーを準備する | 共通 | `Analyzer.swift`, `SchemataRewriter.swift` |
 | 4 | **1 回だけ** ビルドする（`swift build --build-tests --enable-code-coverage --enable-index-store`、またはカスタムのビルドコマンド） | 共通 | `Analyzer.swift` |
 | 5 | 静的参照層：ビルドが書き出したインデックスを読み、referenced 列を埋める | 層 | `References.swift` |
@@ -149,12 +149,53 @@ func badge() -> some View { func __steOriginal() -> some View {
 
 カスタムモードでは、アクティブなミュータントを `STE_MUTANT` と `TEST_RUNNER_STE_MUTANT` の両方で渡します。`xcodebuild test` は `TEST_RUNNER_` 付きの環境変数をテストプロセスに転送するためです。`STE_REACHED` も同じように渡します。
 
+#### case のミュータント
+
+`--case-mutants` を指定すると、`MethodDiscovery` が `SwitchCases.discover` を呼び、本体の末尾にある switch の case を求めます（`DiscoveredMethod.cases`）。対象になる switch と case は [switch の case](docs/ja/methods/extreme-mutation.md#switch-の-case) を参照してください。戻り値型に最も単純な値がないメソッドは、`.mutate([])` として残します。メソッド自身のミュータントはなく、case のミュータントだけを持ちます。
+
+`Analyzer.run()` は、メソッドの case のミュータントに、メソッド自身のミュータントの次の ID を割り当てます。`SchemataRewriter` はそれを各 case の先頭（ラベルのコロンの直後）に入れます。
+
+```swift
+// switch 文：各 case の先頭に、ミュータントの switch を置く
+func isBusy(_ state: LoadState) -> Bool { switch __steActiveMutant { case 1: return true; case 2: return false; case -2: __steReached(1); default: break };
+    switch state {
+    case .loading: switch __steActiveMutant { case 3: return false; case -2: __steReached(3); default: break };
+        return true
+    default: switch __steActiveMutant { case 4: return true; case -2: __steReached(4); default: break };
+        return false
+    }
+}
+
+// switch 式：各 case の式を `if` 式で包む
+func title(for state: LoadState) -> String { switch __steActiveMutant { case 5: return ""; case 6: return "A"; case -2: __steReached(5); default: break };
+    return switch state {
+    case .idle: if __steMutantIs(7) { "" } else if __steActiveMutant == 8 { "A" } else { "Idle" }
+    case .loading: if __steMutantIs(9) { "" } else if __steActiveMutant == 10 { "A" } else { "Loading" }
+    }
+}
+
+// 最も単純な値がない戻り値型：各 case が別の case と同じことをする
+func tint(for state: LoadState) -> Tint {
+    switch state {
+    case .idle: if __steMutantIs(11) { fallthrough }; return .gray
+    case .failed: if __steMutantIs(12) { return .gray }; return .red
+    }
+}
+```
+
+- **switch 式は式のままにする。** case の式の前に文を置くと switch は文になり、すべての case に `return` が必要になる。しかし `return` は、戻らない関数の呼び出しの前には書けない（`return unreachable()` はコンパイルできず、どの呼び出しが戻らないかはコンパイラにしか分からない）。そこで、ミュータントは case の式を包む `if` 式の分岐にする。case が何に評価されるか（値、`throw`、戻らない呼び出し）にかかわらず、最後の分岐の中でも元と同じように有効である。最初の条件の `__steMutantIs` が case の実行を記録する。
+- **`fallthrough` は case の中に直接置く。** `__steActiveMutant` の switch の中に置くと、その switch の次の case に落ちてしまう。そのため `otherCase` のミュータントは `if __steMutantIs(id) { … }` の形にする。別の case の文はラベルと同じ行に挿入するので、行番号は変わらない。switch 式では fallthrough できないので、相手の case からは必ず式を借りる。
+- **各 case は実行されたことを記録する。** メソッドと同じ方法で、その case の最初のミュータントの ID で記録する。そのため `RecordedReach.scopes` には case を実行するテストスコープも入り、case のミュータントはそれらに対して流す。
+
+case のミュータントは、本体全体のミュータントの後に、`runMutants` の 2 巡目として流します。どのメソッドの case を流すかは、1 巡目の結果で決まります。`CaseResult` が case ごとの結果を持ち、`Classifier.classify(_:cases:)` がメソッドの結果と合わせて分類します。
+
 ## テスト
 
 - ユニットテストは、宣言の発見、ミューテーション演算子、書き換え、分類、レポートを対象にする。
 - `Tests/Fixtures/SampleProject` は各指摘が 1 つ以上現れる小さなパッケージ。統合テストで各メソッドの指摘を検証する。
 - `Tests/Fixtures/ReferencedProject` は referenced 列のためのパッケージ。protocol やスーパークラス経由の呼び出し、モックの注入、デフォルト実装、XCTestCase の `setUp()`、別のメソッド経由でしか実行されないメソッドを含む。
 - `Tests/Fixtures/HangingProject` は、ループが終わらなくなるミュータントを持つパッケージ。統合テストで、選んだテストの短いタイムアウトのあとにタイムアウトとして報告されることを確認する。
+- `Tests/Fixtures/SwitchProject` は、ロジックが switch になっているメソッドを集めたパッケージ。どれも本体全体のミュータントでは `tested` になるか、解析対象外になる。統合テストで、`--case-mutants` がどの case を報告するかを検証する。
 - `Tests/Fixtures/EdgeCases` は、if/switch 式、result builder、result builder 外の `some View`、`throws`、actor、`defaultIsolation(MainActor)` など、書き換え後もコンパイルできなければならない構文の集まり。書き換え処理を変更するときはここにケースを足す。
 
 ## 手法を追加するとき

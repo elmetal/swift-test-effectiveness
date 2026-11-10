@@ -13,7 +13,7 @@ struct IntegrationTests {
     static let swift = ProcessInfo.processInfo.environment["STE_SWIFT"] ?? "swift"
 
     private func analyze(
-        _ fixture: String, throwMutants: Bool = false, testSelection: Bool = true,
+        _ fixture: String, throwMutants: Bool = false, caseMutants: Bool = false, testSelection: Bool = true,
         jobs: Int = 1, directLaunch: Bool = true, rerunSurvivors: Bool = false,
         minimumTimeout: Double? = 120,
         log: @escaping @Sendable (String) -> Void = { _ in }
@@ -23,7 +23,7 @@ struct IntegrationTests {
             projectPath: project,
             workDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("ste-it-\(fixture)"),
             buildSystem: .swiftPM(swiftExecutable: Self.swift, targets: [], testFilter: nil),
-            discovery: DiscoveryOptions(includeThrowMutants: throwMutants),
+            discovery: DiscoveryOptions(includeThrowMutants: throwMutants, caseMutants: caseMutants),
             minimumTimeout: minimumTimeout,
             testSelection: testSelection,
             jobs: jobs,
@@ -228,6 +228,63 @@ struct IntegrationTests {
         // Each scope ran alone on the two workers.
         #expect(report.testsFailingAlone == [])
         #expect(messages.all.contains { $0.hasPrefix("Test selection:") && !$0.hasPrefix("Test selection: 0 mutants detected") })
+    }
+
+    /// `Tests/Fixtures/SwitchProject`: one test of one case detects every mutant of the whole body,
+    /// so every method is `tested` until the cases are mutated one by one.
+    @Test func caseMutantsFindTheCasesNoTestVerifies() throws {
+        let whole = try analyze("SwitchProject")
+        #expect(whole.methods.allSatisfy { $0.classification == .tested && $0.cases == nil })
+        // A return type without a simplest value: nothing to replace the whole body with.
+        #expect(whole.skipped.map(\.method.name) == ["LoadState.tint", "LoadState.severity(threshold:)"])
+
+        let report = try analyze("SwitchProject", caseMutants: true)
+        let methods = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0) })
+        #expect(report.methods.map(\.classification.rawValue).sorted() == [
+            "partially-tested", "partially-tested", "partially-tested", "tested", "tested", "tested", "tested",
+        ])
+        #expect(report.skipped.isEmpty)
+        func cases(_ name: String) -> [String] {
+            (methods[name]?.cases ?? []).map { result in
+                let outcomes = result.mutants.map(\.outcome.rawValue).joined(separator: ",")
+                return "\(result.label): \(result.executed.rawValue) \(outcomes)"
+            }
+        }
+        // A switch expression: the mutants are an `if` expression around each case.
+        #expect(methods["Presenter.title(for:)"]?.classification == .partiallyTested)
+        #expect(cases("Presenter.title(for:)") == [
+            "case .idle: true killed,killed",
+            "case .loading: false notRun,notRun",
+            "case .loaded(let count): true survived,survived",
+            "case .failed(let message): false notRun,notRun",
+        ])
+        // A mutant that returns what the case returns is left out.
+        #expect(cases("Presenter.isBusy(_:)") == [
+            "case .loading: true killed", "case .idle, .loaded, .failed: true killed",
+        ])
+        #expect(cases("Presenter.badge(for:)") == [
+            "case .loaded(let count): true killed,killed", "case .failed: true killed", "default: true killed",
+        ])
+        #expect(cases("Presenter.retryDelay(for:)") == ["case .failed: true killed"])
+        // `case .noop` does nothing to begin with.
+        #expect(methods["Counter.handle(_:)"]?.classification == .partiallyTested)
+        #expect(cases("Counter.handle(_:)") == [
+            "case .increment: true killed", "case .decrement: true survived", "case .reset: false notRun",
+        ])
+        // Methods without mutants of their own: each case does what another case does. The last
+        // case cannot fall through, and executes the statements of the first.
+        #expect(methods["LoadState.tint"]?.classification == .partiallyTested)
+        #expect(methods["LoadState.tint"]?.mutants == [])
+        #expect(methods["LoadState.tint"]?.executed == .executed)
+        #expect(cases("LoadState.tint") == [
+            "case .idle: true killed", "case .loading: true survived", "case .loaded: false notRun",
+            "case .failed: true killed",
+        ])
+        // `case .idle` and `default` do the same, and no other case can stand in for them.
+        #expect(methods["LoadState.severity(threshold:)"]?.classification == .tested)
+        #expect(cases("LoadState.severity(threshold:)") == [
+            "case .loaded(let count) where count > threshold: true killed", "case .failed(let message): true killed",
+        ])
     }
 
     /// The schema of every construct in `Tests/Fixtures/EdgeCases` must compile and the baseline must pass.

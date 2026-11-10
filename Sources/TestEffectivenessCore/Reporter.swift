@@ -40,7 +40,8 @@ public enum Reporter {
         case .pseudoTested:
             "Tests execute these methods, but every extreme mutant survived: no test checks what they do."
         case .partiallyTested:
-            "Some extreme mutants survived: tests check these methods only for part of their behaviour."
+            "Some extreme mutants survived, of the whole body or of one case of its switch: "
+                + "tests check these methods only for part of their behaviour."
         case .notCovered:
             "No test executes these methods (mutants were not run)."
         case .tested:
@@ -67,7 +68,31 @@ public enum Reporter {
             "`\(method)` can render nothing without any test failing. Add a UI, snapshot or view-inspection test."
         case .throwError:
             "`\(method)` can always throw without any test failing. Assert that it succeeds for valid input."
+        case .otherCase(let label):
+            "`\(method)` can do what `\(label)` does without any test failing. Assert the result."
         }
+    }
+
+    /// Actionable feedback for a case that no test runs, or whose mutants survived.
+    public static func advice(for result: CaseResult, method: String) -> String {
+        let place = "`\(result.label)` (line \(result.line))"
+        if result.executed == .notExecuted {
+            return "No test runs \(place) of `\(method)`. Add a test of this case."
+        }
+        let survived = result.survivingMutants.map(\.mutant.mutation)
+        let behaviours = survived.map { mutation in
+            switch mutation {
+            case .emptyBody: "do nothing"
+            case .returnEmptyArray, .returnEmptyDictionary, .returnEmptyData: "return an empty collection"
+            case .emptyView: "render nothing"
+            case .throwError: "throw"
+            case .otherCase(let label): "do what `\(label)` does"
+            default: mutation.summary
+            }
+        }
+        let assertion = survived.allSatisfy { $0 == .emptyBody } ? "its side effects" : "the result"
+        return "In \(place), `\(method)` can \(behaviours.joined(separator: " or ")) without any test failing. "
+            + "Add a test of this case that asserts \(assertion)."
     }
 
     // MARK: - Text
@@ -93,13 +118,18 @@ public enum Reporter {
                 case .pseudoTested, .partiallyTested:
                     if let note = referenceNote(result) { out += "    \(note)\n" }
                     if let note = executionNote(result, in: report) { out += "    \(note)\n" }
-                    out += "    survived: \(result.survivingMutants.map(\.mutant.mutation.summary).joined(separator: ", "))\n"
+                    if !result.survivingMutants.isEmpty {
+                        out += "    survived: \(result.survivingMutants.map(\.mutant.mutation.summary).joined(separator: ", "))\n"
+                    }
                     let detected = result.mutants.filter(\.isDetected)
                     if !detected.isEmpty {
                         out += "    detected: \(detected.map(\.mutant.mutation.summary).joined(separator: ", "))\n"
                     }
                     for mutant in result.survivingMutants {
                         out += "    → \(advice(for: mutant.mutant.mutation, method: result.method.name))\n"
+                    }
+                    for unverified in result.unverifiedCases {
+                        out += "    → \(advice(for: unverified, method: result.method.name))\n"
                     }
                 case .notCovered, .tested:
                     break
@@ -148,6 +178,9 @@ public enum Reporter {
                     if let note = executionNote(result, in: report) { out += "  - \(note)\n" }
                     for mutant in result.survivingMutants {
                         out += "  - \(mutant.mutant.mutation.summary) survived. \(advice(for: mutant.mutant.mutation, method: result.method.name))\n"
+                    }
+                    for unverified in result.unverifiedCases {
+                        out += "  - \(advice(for: unverified, method: result.method.name))\n"
                     }
                 }
             case .notCovered, .tested:

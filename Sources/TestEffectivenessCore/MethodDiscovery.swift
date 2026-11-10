@@ -20,6 +20,9 @@ public struct DiscoveredMethod: Sendable {
     /// Declared inside an `#if` clause. Whether that clause is active depends on the build
     /// configuration, so the method may not be compiled at all.
     var isConditionallyCompiled: Bool = false
+    /// The cases of the switch the body ends with, when they are mutated one by one (see
+    /// `DiscoveredCase`); empty otherwise.
+    public var cases: [DiscoveredCase] = []
 
     public var mutations: [ExtremeMutation] {
         if case .mutate(let mutations) = decision { return mutations }
@@ -51,10 +54,15 @@ public struct DiscoveryOptions: Sendable {
     public var includeThrowMutants: Bool
     /// Skip methods returning `Void` whose body only logs (see `AridDetector`); `nil` disables it.
     public var arid: AridDetector?
+    /// Also mutate each case of a switch that a method ends with (see `DiscoveredCase`).
+    public var caseMutants: Bool
 
-    public init(includeThrowMutants: Bool = false, arid: AridDetector? = AridDetector()) {
+    public init(
+        includeThrowMutants: Bool = false, arid: AridDetector? = AridDetector(), caseMutants: Bool = false
+    ) {
         self.includeThrowMutants = includeThrowMutants
         self.arid = arid
+        self.caseMutants = caseMutants
     }
 }
 
@@ -81,7 +89,7 @@ public enum MethodDiscovery {
     }
 
     private static let inliningAttributes: Set<String> = ["inlinable", "_transparent", "_alwaysEmitIntoClient"]
-    private static let neverReturningCalls: Set<String> = ["fatalError", "preconditionFailure"]
+    static let neverReturningCalls: Set<String> = ["fatalError", "preconditionFailure"]
 
     private final class Visitor: SyntaxVisitor {
         let path: String
@@ -276,6 +284,21 @@ public enum MethodDiscovery {
                 implicitReturn = implicitReturnOffset(statements)
             }
 
+            var cases: [DiscoveredCase] = []
+            if options.caseMutants, !isResultBuilder, opaqueBody == nil {
+                let line = { [converter] (position: AbsolutePosition) in converter.location(for: position).line }
+                if case .mutate(let mutations) = decision {
+                    cases = SwitchCases.discover(statements, mutations: mutations, arid: options.arid, line: line)
+                } else if case .skip(let reason) = decision, reason.hasPrefix(MutationOperators.unsupportedReturnType),
+                          returnType?.tokens(viewMode: .sourceAccurate).contains(where: { $0.tokenKind == .keyword(.some) }) != true {
+                    // No simplest value to return: the method has no mutant of its own, and each
+                    // case does what another case does. Not for an opaque type: its body may be a
+                    // result builder without saying so (`var body: some ToolbarContent`).
+                    cases = SwitchCases.discover(statements, mutations: [], arid: options.arid, line: line)
+                    if !cases.isEmpty { decision = .mutate([]) }
+                }
+            }
+
             methods.append(DiscoveredMethod(
                 info: info,
                 decision: decision,
@@ -284,7 +307,8 @@ public enum MethodDiscovery {
                 implicitReturnInsertion: implicitReturn,
                 isResultBuilder: isResultBuilder,
                 opaqueBody: opaqueBody,
-                isConditionallyCompiled: ifConfigDepth > 0
+                isConditionallyCompiled: ifConfigDepth > 0,
+                cases: cases
             ))
         }
 
@@ -331,7 +355,7 @@ public enum MethodDiscovery {
     }
 
     /// Finds `return` statements, ignoring nested closures, functions and accessors.
-    private final class ReturnFinder: SyntaxVisitor {
+    final class ReturnFinder: SyntaxVisitor {
         var found = false
 
         static func containsReturn(_ node: Syntax) -> Bool {
