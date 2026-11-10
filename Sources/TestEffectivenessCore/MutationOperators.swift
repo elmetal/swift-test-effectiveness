@@ -26,6 +26,8 @@ public enum MutationOperators {
         "Double", "Float", "Float16", "Float80", "CGFloat", "Decimal", "TimeInterval",
     ]
     static let stringTypes: Set<String> = ["String", "Substring"]
+    /// How the reason starts when the return type has no simplest value.
+    static let unsupportedReturnType = "unsupported return type"
     static let arrayLikeTypes: Set<String> = ["Array", "Set", "ContiguousArray", "ArraySlice"]
 
     /// - Parameters:
@@ -43,7 +45,7 @@ public enum MutationOperators {
                constraint == "View" || constraint == "SwiftUI.View" {
                 return .mutate([.emptyView])
             }
-            return .skip(reason: "unsupported return type `\(type.trimmedDescription)`")
+            return .skip(reason: "\(unsupportedReturnType) `\(type.trimmedDescription)`")
         }
 
         if isResultBuilder {
@@ -91,7 +93,7 @@ public enum MutationOperators {
         if unqualified == "Data" {
             return .mutate([.returnEmptyData])
         }
-        return .skip(reason: "unsupported return type `\(type.trimmedDescription)`")
+        return .skip(reason: "\(unsupportedReturnType) `\(type.trimmedDescription)`")
     }
 
     private static func unwrapAttributes(_ type: TypeSyntax) -> TypeSyntax {

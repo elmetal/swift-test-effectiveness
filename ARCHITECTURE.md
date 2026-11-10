@@ -21,7 +21,7 @@ The pipeline is a set of shared stages around a sequence of method layers, order
 | # | Stage | Kind | File |
 |---|---|---|---|
 | 1 | List source files: non-test targets from `swift package describe`, or `--source-dir` in custom mode; apply `--exclude` | shared | `Analyzer.swift` |
-| 2 | Discover declarations with SwiftSyntax and decide how each layer will analyse them (or why they are skipped, including bodies that only log: `AridDetection.swift`); with `--since`, keep only declarations that overlap changed lines | shared | `MethodDiscovery.swift`, `MutationOperators.swift`, `AridDetection.swift`, `GitDiff.swift` |
+| 2 | Discover declarations with SwiftSyntax and decide how each layer will analyse them (or why they are skipped, including bodies that only log: `AridDetection.swift`); with `--since`, keep only declarations that overlap changed lines | shared | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `AridDetection.swift`, `GitDiff.swift` |
 | 3 | Copy the project to `<package>/.build/test-effectiveness/project` and prepare the copy for the layers that need it | shared | `Analyzer.swift`, `SchemataRewriter.swift` |
 | 4 | Build **once** (`swift build --build-tests --enable-code-coverage --enable-index-store`, or the custom build command) | shared | `Analyzer.swift` |
 | 5 | Static reference layer: read the build's index to fill the referenced column | layer | `References.swift` |
@@ -138,12 +138,53 @@ Consequences for which declarations can be mutated (see [Not targeted](docs/meth
 
 In custom mode, the active mutant is exported as both `STE_MUTANT` and `TEST_RUNNER_STE_MUTANT`, because `xcodebuild test` forwards `TEST_RUNNER_`-prefixed variables to the test process. `STE_REACHED` is exported the same way.
 
+#### Case mutants
+
+With `--case-mutants`, `MethodDiscovery` asks `SwitchCases.discover` for the cases of the switch a body ends with (`DiscoveredMethod.cases`); see [Cases of a switch](docs/methods/extreme-mutation.md#cases-of-a-switch) for which switches and cases qualify. A method whose return type has no simplest value is then kept with `.mutate([])`: no mutant of its own, only those of its cases.
+
+`Analyzer.run()` gives the mutants of a method's cases the ids after the method's own, and `SchemataRewriter` puts them at the start of each case, after the label's colon:
+
+```swift
+// A switch statement: the switch over the mutants, at the start of each case
+func isBusy(_ state: LoadState) -> Bool { switch __steActiveMutant { case 1: return true; case 2: return false; case -2: __steReached(1); default: break };
+    switch state {
+    case .loading: switch __steActiveMutant { case 3: return false; case -2: __steReached(3); default: break };
+        return true
+    default: switch __steActiveMutant { case 4: return true; case -2: __steReached(4); default: break };
+        return false
+    }
+}
+
+// A switch expression: an `if` expression around the expression of each case
+func title(for state: LoadState) -> String { switch __steActiveMutant { case 5: return ""; case 6: return "A"; case -2: __steReached(5); default: break };
+    return switch state {
+    case .idle: if __steMutantIs(7) { "" } else if __steActiveMutant == 8 { "A" } else { "Idle" }
+    case .loading: if __steMutantIs(9) { "" } else if __steActiveMutant == 10 { "A" } else { "Loading" }
+    }
+}
+
+// A return type without a simplest value: each case does what another case does
+func tint(for state: LoadState) -> Tint {
+    switch state {
+    case .idle: if __steMutantIs(11) { fallthrough }; return .gray
+    case .failed: if __steMutantIs(12) { return .gray }; return .red
+    }
+}
+```
+
+- **A switch expression stays an expression.** A statement in front of a case's expression would turn the switch into a statement, and every case would then need a `return`, which does not compile in front of a call that never returns (`return unreachable()`; only the compiler knows which calls those are). The mutants are therefore the branches of an `if` expression around the case's expression: whatever the case evaluates to (a value, `throw`, a call that never returns) is as valid in the last branch as it was on its own. `__steMutantIs` in the first condition records the case.
+- **`fallthrough` stands in the case itself.** Inside the switch over `__steActiveMutant` it would fall through to that switch's next case, so an `otherCase` mutant is an `if __steMutantIs(id) { … }`. The statements of another case are inserted on the line of the label, which keeps the line numbers. In a switch expression nothing can fall through, and the other case always lends its expression.
+- **Each case records that it ran**, under the id of its first mutant, the same way a method does. `RecordedReach.scopes` therefore has the test scopes that execute a case, and a case's mutants run against those.
+
+The case mutants are a second round of `runMutants`, after the mutants of the whole bodies: the outcomes of the first decide which methods' cases run. `CaseResult` holds a case's outcomes, and `Classifier.classify(_:cases:)` combines them with the method's.
+
 ## Tests
 
 - Unit tests cover discovery, mutation operators, the rewriter, classification and reporting.
 - `Tests/Fixtures/SampleProject` is a small package in which every finding appears at least once. The integration test checks the finding for each method.
 - `Tests/Fixtures/ReferencedProject` covers the referenced column: calls through a protocol and a superclass, mock injection, a default implementation, `setUp()` in an XCTestCase, and a method executed only through another one.
 - `Tests/Fixtures/HangingProject` has a mutant that makes a loop endless. The integration test checks that it is reported as timed out, after the short timeout of the selected tests.
+- `Tests/Fixtures/SwitchProject` has methods whose logic is a switch, each `tested` by the mutants of its whole body or not analysed at all. The integration test checks which cases `--case-mutants` reports.
 - `Tests/Fixtures/EdgeCases` collects constructs that must still compile after rewriting: `if`/`switch` expressions, result builders, `some View` outside a result builder, `throws`, actors, `defaultIsolation(MainActor)`, and more. Add a case here when changing the rewriter.
 
 ## Adding a method

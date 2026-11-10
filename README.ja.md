@@ -114,6 +114,7 @@ swift-test-effectiveness /path/to/package
 | `--coverage-profdata <path>` | カバレッジ | カスタムモード：テストコマンドが書き出す `.profdata`、またはその最新のものを探すディレクトリ |
 | `--coverage-binary <path>` | カバレッジ | カスタムモード：カバレッジ付きでビルドしたバイナリ、またはバイナリを探すディレクトリ（複数指定可） |
 | `--throw-mutants` | 極端ミューテーション | 型指定なしの `throws` メソッドに `throw` するミュータントを追加 |
+| `--case-mutants` | 極端ミューテーション | メソッドの末尾にある switch の各 case もミューテーションし、どのテストも検証していない case を見つける。enum などデフォルト値のない型を返すメソッドも、この形なら解析する（[switch の case](docs/ja/methods/extreme-mutation.md#switch-の-case) を参照） |
 | `--no-arid` | 極端ミューテーション | 本体がログ出力だけの `Void` メソッドも解析する（既定では対象外。[対象外](docs/ja/methods/extreme-mutation.md#対象外) を参照） |
 | `--arid-call <name>` | 極端ミューテーション | この関数の呼び出しもログ出力とみなす。例：`track`、`Analytics.shared.track`（複数可） |
 | `--jobs <n>` | 極端ミューテーション | 同時に流すテスト実行の数（[並列実行](#並列実行) を参照） |
@@ -124,7 +125,7 @@ swift-test-effectiveness /path/to/package
 
 終了コード：`0` 成功、`1` `--fail-on-pseudo-tested` に該当、`2` ビルド失敗やベースライン失敗など、`128 + シグナル番号` 中断（Ctrl-C なら `130`）。中断したときは、実行中のビルドやテストのコマンドも止めます。
 
-JSON レポートの先頭には `schemaVersion` と `toolVersion` が入ります。`schemaVersion` はフィールドの削除・名前変更・意味の変更があったときに上がります。フィールドの追加では上がらないので、知らないキーは無視してください。`testsFailingAlone` は [単独で失敗するテスト](#レポートの読み方)（`test`、`timedOut`、`log`）の一覧です。チェックを行わなかったときはこのキー自体がありません。
+JSON レポートの先頭には `schemaVersion` と `toolVersion` が入ります。`schemaVersion` はフィールドの削除・名前変更・意味の変更があったときに上がります。フィールドの追加では上がらないので、知らないキーは無視してください。`testsFailingAlone` は [単独で失敗するテスト](#レポートの読み方)（`test`、`timedOut`、`log`）の一覧です。チェックを行わなかったときはこのキー自体がありません。`--case-mutants` 指定時は、case を流したメソッドに `cases` が付きます（ミュータントのある case ごとに `label`、`line`、`executed`、`mutants`）。
 
 ### Xcode プロジェクトなど（カスタムモード）
 

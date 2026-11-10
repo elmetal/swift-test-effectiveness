@@ -48,11 +48,21 @@ public enum SchemataRewriter {
         var text: String
     }
 
-    /// - Parameter methods: methods of this file and the mutants assigned to each.
-    public static func rewrite(source: String, methods: [(DiscoveredMethod, [Mutant])]) -> String {
+    /// - Parameters:
+    ///   - methods: methods of this file and the mutants assigned to each.
+    ///   - cases: for each of `methods`, the mutants of each of its cases, in the order of
+    ///     `DiscoveredMethod.cases`. A method may have these and no mutant of its own.
+    public static func rewrite(
+        source: String, methods: [(DiscoveredMethod, [Mutant])], cases: [[[Mutant]]] = []
+    ) -> String {
         var insertions: [Insertion] = []
-        for (method, mutants) in methods where !mutants.isEmpty {
-            insertions += self.insertions(for: method, mutants: mutants)
+        var caseIDs: [Int] = []
+        for (index, (method, mutants)) in methods.enumerated() {
+            let caseMutants = index < cases.count ? cases[index] : method.cases.map { _ in [] }
+            guard !mutants.isEmpty || caseMutants.contains(where: { !$0.isEmpty }) else { continue }
+            if !mutants.isEmpty { insertions += self.insertions(for: method, mutants: mutants) }
+            insertions += self.insertions(for: method.cases, mutants: caseMutants)
+            caseIDs += caseMutants.flatMap { $0.map(\.id) }
         }
         guard !insertions.isEmpty else { return source }
 
@@ -66,7 +76,7 @@ public enum SchemataRewriter {
         }
         var result = String(decoding: bytes, as: UTF8.self)
         if !result.hasSuffix("\n") { result += "\n" }
-        let ids = methods.flatMap { $0.1.map(\.id) }
+        let ids = methods.flatMap { $0.1.map(\.id) } + caseIDs
         return result + footer(mutantIDs: ids.min()!...ids.max()!)
     }
 
@@ -101,15 +111,51 @@ public enum SchemataRewriter {
                 ),
             ]
         }
-        let cases = mutants.map { "case \($0.id): \($0.mutation.replacementStatement)" }.joined(separator: "; ")
-        let record = "case \(recordingValue): __steReached(\(mutants[0].id))"
-        var result = [
-            Insertion(offset: method.bodyContentStart, text: " switch \(switchName) { \(cases); \(record); default: break };")
-        ]
+        var result = [Insertion(offset: method.bodyContentStart, text: mutantSwitch(mutants))]
         if let offset = method.implicitReturnInsertion {
             result.append(Insertion(offset: offset, text: "return "))
         }
         return result
+    }
+
+    /// The mutants of each case that has some, at its start; they also record that the case ran.
+    ///
+    /// In a switch statement: the switch over the mutants, as at the start of a method. In a
+    /// switch expression a case is one expression, so its mutants are the branches of an `if`
+    /// expression around it; whatever the case evaluates to (a value, `throw`, a call that never
+    /// returns) is as valid in the last branch as it was on its own.
+    static func insertions(for cases: [DiscoveredCase], mutants: [[Mutant]]) -> [Insertion] {
+        var result: [Insertion] = []
+        for (discovered, mutants) in zip(cases, mutants) where !mutants.isEmpty {
+            if let expression = discovered.expression {
+                let branches = mutants.enumerated().map { index, mutant in
+                    // The first condition is the one that records.
+                    let condition = index == 0 ? "__steMutantIs(\(mutant.id))" : "\(switchName) == \(mutant.id)"
+                    let value = mutant.mutation.isOtherCase
+                        ? discovered.otherCaseStatement ?? "" : mutant.mutation.replacementExpression
+                    return "if \(condition) { \(value) } else "
+                }
+                result.append(Insertion(offset: expression.lowerBound, text: branches.joined() + "{ "))
+                result.append(Insertion(offset: expression.upperBound, text: " }"))
+                continue
+            }
+            // `fallthrough` has to stand in the case itself, not in the switch of the mutants.
+            let returning = mutants.filter { !$0.mutation.isOtherCase }
+            var text = returning.isEmpty ? "" : mutantSwitch(returning)
+            for mutant in mutants where mutant.mutation.isOtherCase {
+                let statement = discovered.otherCaseStatement ?? mutant.mutation.replacementStatement
+                text += " if __steMutantIs(\(mutant.id)) { \(statement) };"
+            }
+            result.append(Insertion(offset: discovered.contentStart, text: text))
+        }
+        return result
+    }
+
+    /// Leaves the method as the active mutant says, or records that this point was reached.
+    private static func mutantSwitch(_ mutants: [Mutant]) -> String {
+        let cases = mutants.map { "case \($0.id): \($0.mutation.replacementStatement)" }.joined(separator: "; ")
+        let record = "case \(recordingValue): __steReached(\(mutants[0].id))"
+        return " switch \(switchName) { \(cases); \(record); default: break };"
     }
 
     /// Appended at the end of every mutated file. Placed at the end (not the top) to keep line

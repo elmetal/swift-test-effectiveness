@@ -42,6 +42,9 @@ public enum ExtremeMutation: Codable, Hashable, Sendable {
     case emptyView
     /// Throwing methods (opt-in): `throw <error>`.
     case throwError
+    /// A case of a switch, in a method whose return type has no simplest value: the case does
+    /// what the case with this label does (see `DiscoveredCase`).
+    case otherCase(String)
 
     /// Swift statement executed in place of the original body (except `emptyView`, which is the
     /// other branch of the original body: see `SchemataRewriter`).
@@ -57,7 +60,20 @@ public enum ExtremeMutation: Codable, Hashable, Sendable {
         case .returnEmptyDictionary: "return [:]"
         case .emptyView: "EmptyView()"
         case .throwError: "throw \(SchemataRewriter.errorTypeName)()"
+        // Unless the other case is not the next one: see `DiscoveredCase.otherCaseStatement`.
+        case .otherCase: "fallthrough"
         }
+    }
+
+    /// What stands for the result in an `if` expression: the statement without its `return`.
+    var replacementExpression: String {
+        let statement = replacementStatement
+        return statement.hasPrefix("return ") ? String(statement.dropFirst("return ".count)) : statement
+    }
+
+    var isOtherCase: Bool {
+        if case .otherCase = self { return true }
+        return false
     }
 
     /// Human-readable description of the mutated behaviour, e.g. "`return 0`".
@@ -65,6 +81,7 @@ public enum ExtremeMutation: Codable, Hashable, Sendable {
         switch self {
         case .emptyBody: "empty body"
         case .emptyView: "`EmptyView()`"
+        case .otherCase(let label): "as `\(label)`"
         default: "`\(replacementStatement)`"
         }
     }
@@ -196,6 +213,30 @@ public enum ReferenceStatus: String, Codable, Sendable {
     case unknown
 }
 
+/// One case of the switch a method ends with: whether the tests check what the method does in
+/// that case (see `DiscoveredCase`).
+public struct CaseResult: Codable, Hashable, Sendable {
+    /// The label as written, without the colon: `case .loading`, `default`.
+    public var label: String
+    /// Line of the label.
+    public var line: Int
+    /// Whether any test ran the case, as the mutant schema recorded it.
+    public var executed: ExecutionStatus
+    /// Each extreme mutant of the case and its outcome.
+    public var mutants: [MutantResult]
+
+    public init(label: String, line: Int, executed: ExecutionStatus, mutants: [MutantResult]) {
+        self.label = label
+        self.line = line
+        self.executed = executed
+        self.mutants = mutants
+    }
+
+    public var survivingMutants: [MutantResult] { mutants.filter { $0.outcome == .survived } }
+    /// Tests run the case and detect every mutant of it.
+    public var isVerified: Bool { executed != .notExecuted && survivingMutants.isEmpty }
+}
+
 public struct MethodResult: Codable, Hashable, Sendable {
     public var method: MethodInfo
     /// The referenced column.
@@ -206,19 +247,26 @@ public struct MethodResult: Codable, Hashable, Sendable {
     public var classification: MethodClassification
     /// The verified column's evidence: each extreme mutant and its outcome.
     public var mutants: [MutantResult]
+    /// The cases of the switch the method ends with that have mutants of their own. `nil` when
+    /// they were not run: the method has no such switch, case mutants are off, or no mutant of
+    /// the whole body was detected (the cases would then say nothing more).
+    public var cases: [CaseResult]?
 
     public init(
         method: MethodInfo, referenced: ReferenceStatus = .unknown, executed: ExecutionStatus,
-        classification: MethodClassification, mutants: [MutantResult]
+        classification: MethodClassification, mutants: [MutantResult], cases: [CaseResult]? = nil
     ) {
         self.method = method
         self.referenced = referenced
         self.executed = executed
         self.classification = classification
         self.mutants = mutants
+        self.cases = cases
     }
 
     public var survivingMutants: [MutantResult] { mutants.filter { $0.outcome == .survived } }
+    /// The cases that no test runs, or in which a mutant survived.
+    public var unverifiedCases: [CaseResult] { cases?.filter { !$0.isVerified } ?? [] }
 }
 
 /// A method that was found but not mutated, with the reason.
@@ -298,6 +346,25 @@ public enum Classifier {
         let survived = executed.filter { $0.outcome == .survived }.count
         if survived == executed.count { return .pseudoTested }
         if survived == 0 { return .tested }
+        return .partiallyTested
+    }
+
+    /// A method whose mutants were all detected is still only partially tested when the tests
+    /// leave one of its cases unverified: one test of one case detects every mutant of the body.
+    ///
+    /// A method without mutants of its own (its return type has no simplest value) is classified
+    /// by the mutants of its cases alone.
+    public static func classify(_ results: [MutantResult], cases: [CaseResult]?) -> MethodClassification {
+        if results.isEmpty, let cases {
+            let executed = cases.flatMap(\.mutants).filter { $0.outcome != .notRun }
+            let survived = executed.filter { $0.outcome == .survived }.count
+            if survived == executed.count { return .pseudoTested }
+            return survived == 0 && cases.allSatisfy(\.isVerified) ? .tested : .partiallyTested
+        }
+        let classification = classify(results)
+        guard classification == .tested, cases?.contains(where: { !$0.isVerified }) == true else {
+            return classification
+        }
         return .partiallyTested
     }
 }

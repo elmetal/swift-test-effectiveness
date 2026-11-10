@@ -172,12 +172,21 @@ public final class Analyzer: @unchecked Sendable {
 
         var nextID = 1
         var assignments: [(DiscoveredMethod, [Mutant])] = []
+        // For each of `assignments`: the mutants of each of the method's cases. A method may have
+        // these and no mutant of its own.
+        var caseAssignments: [[[Mutant]]] = []
         for method in methods {
             let mutants = method.mutations.map { mutation in
                 defer { nextID += 1 }
                 return Mutant(id: nextID, mutation: mutation)
             }
             assignments.append((method, mutants))
+            caseAssignments.append(method.cases.map { discovered in
+                discovered.mutations.map { mutation in
+                    defer { nextID += 1 }
+                    return Mutant(id: nextID, mutation: mutation)
+                }
+            })
         }
         let mutantCount = nextID - 1
         guard mutantCount > 0 else {
@@ -186,7 +195,12 @@ public final class Analyzer: @unchecked Sendable {
             )
         }
 
-        try prepareWorkspace(assignments)
+        let methodsWithCases = caseAssignments.filter { !$0.isEmpty }
+        if !methodsWithCases.isEmpty {
+            log("Found \(methodsWithCases.reduce(0) { $0 + $1.filter { !$0.isEmpty }.count }) cases to mutate "
+                + "in \(methodsWithCases.count) methods that end with a switch.")
+        }
+        try prepareWorkspace(assignments, cases: caseAssignments)
         try build()
         let references = loadReferences(methods.map(\.info))
         let (baselineDuration, coverage, baselineOutput) = try runBaseline()
@@ -210,8 +224,8 @@ public final class Analyzer: @unchecked Sendable {
         )
 
         // Decide up front which mutants run, so that progress can show the total.
-        var planned: [(method: DiscoveredMethod, mutants: [Mutant], reached: Bool?)] = []
-        for (method, mutants) in assignments {
+        var planned: [(method: DiscoveredMethod, mutants: [Mutant], reached: Bool?, cases: [[Mutant]])] = []
+        for ((method, mutants), cases) in zip(assignments, caseAssignments) {
             let reached = coverage?.wasExecuted(
                 file: copyRoot.appendingPathComponent(method.info.file).path,
                 bodyStart: method.info.bodyStart
@@ -223,7 +237,7 @@ public final class Analyzer: @unchecked Sendable {
                 skipped.append(SkippedMethod(method: method.info, reason: Self.notCompiledReason))
                 continue
             }
-            planned.append((method, mutants, reached))
+            planned.append((method, mutants, reached, cases))
         }
         let total = planned.filter { $0.reached != false }.reduce(0) { $0 + $1.mutants.count }
         log("Running \(total) mutants\(jobs > 1 ? " with \(jobs) jobs" : "").")
@@ -238,7 +252,7 @@ public final class Analyzer: @unchecked Sendable {
         }
 
         // Every mutant that runs, in order; the results go back into the same positions.
-        var outcomes: [[MutantResult?]] = planned.map { method, mutants, reached in
+        var outcomes: [[MutantResult?]] = planned.map { _, mutants, reached, _ in
             mutants.map { reached == false ? MutantResult(mutant: $0, outcome: .notRun) : nil }
         }
         var work: [MutantRun] = []
@@ -247,7 +261,8 @@ public final class Analyzer: @unchecked Sendable {
         // Asked of the index only when nothing was recorded, and never for a single scope, which
         // is the whole suite either way.
         let indexReach = recorded == nil && (selectable?.count ?? 0) > 1 ? references?.reachingTests() : nil
-        for (methodIndex, (method, mutants, reached)) in planned.enumerated() where reached != false {
+        for (methodIndex, (method, mutants, reached, _)) in planned.enumerated()
+        where reached != false && !mutants.isEmpty {
             // What the scopes executed when the build recorded it; what the index says otherwise.
             let reaching = recorded.map { $0.scopes[mutants[0].id] ?? [] } ?? indexReach?[method.info]
             let tests = selectable.flatMap { all in
@@ -263,19 +278,76 @@ public final class Analyzer: @unchecked Sendable {
                 ))
             }
         }
-        let (finished, statistics) = try runMutants(work, timeout: timeout, initialEstimate: baselineDuration)
+        var (finished, statistics) = try runMutants(work, timeout: timeout, initialEstimate: baselineDuration)
         for (run, result) in zip(work, finished) {
             outcomes[run.method][run.index] = result
         }
 
-        let results = zip(planned, outcomes).map { plan, outcomes in
+        // The cases of the methods the tests verify at all. Where every mutant of the whole body
+        // survived, the cases have nothing to add. A method without mutants of its own has only
+        // its cases to go by.
+        var caseResults: [[CaseResult]?] = Array(repeating: nil, count: planned.count)
+        var caseWork: [MutantRun] = []
+        for (methodIndex, (method, mutants, reached, cases)) in planned.enumerated() {
+            guard !cases.isEmpty, reached != false,
+                  mutants.isEmpty || outcomes[methodIndex].contains(where: { $0?.isDetected == true })
+            else { continue }
+            var results: [CaseResult] = []
+            for (discovered, mutants) in zip(method.cases, cases) where !mutants.isEmpty {
+                let reaching = recorded.map { $0.scopes[mutants[0].id] ?? [] }
+                // What the recording says of the case: a scope ran it, or none did. The latter is
+                // only certain when the scopes are every test of the suite.
+                let ran: Bool? = switch reaching {
+                case let scopes? where !scopes.isEmpty: true
+                case .some: recorded?.coversSuite == true ? false : nil
+                case nil: nil
+                }
+                results.append(CaseResult(
+                    label: discovered.label, line: discovered.line,
+                    executed: ExecutionStatus.resolve(coverage: ran, mutants: []),
+                    mutants: ran == false ? mutants.map { MutantResult(mutant: $0, outcome: .notRun) } : []
+                ))
+                guard ran != false else { continue }
+                let tests = selectable.flatMap { all in
+                    TestSelection.tests(reaching: reaching.map { $0.intersection(all) }, all: all)
+                }
+                let selectedTimeout = tests.map { tests in
+                    runTimeout.selected(aloneDurations: tests.map { aloneDurations[$0] })
+                } ?? timeout
+                for mutant in mutants {
+                    // `index` is the case here: its results arrive in the order of its mutants.
+                    caseWork.append(MutantRun(
+                        method: methodIndex, index: results.count - 1, mutant: mutant, tests: tests,
+                        selectedTimeout: selectedTimeout, rerunsSurvivor: !selectionIsExact,
+                        name: "\(method.info.name), \(discovered.label)"
+                    ))
+                }
+            }
+            caseResults[methodIndex] = results
+        }
+        if !caseWork.isEmpty {
+            log("Running \(caseWork.count) case mutants\(jobs > 1 ? " with \(jobs) jobs" : "").")
+            let (finished, caseStatistics) = try runMutants(caseWork, timeout: timeout, initialEstimate: baselineDuration)
+            statistics.add(caseStatistics)
+            for (run, result) in zip(caseWork, finished) {
+                caseResults[run.method]![run.index].mutants.append(result)
+                // A killed mutant means a test ran the case, whatever was recorded.
+                if result.outcome == .killed { caseResults[run.method]![run.index].executed = .executed }
+            }
+        }
+
+        let results = zip(zip(planned, outcomes), caseResults).map { planAndOutcomes, cases in
+            let (plan, outcomes) = planAndOutcomes
             let mutantResults = outcomes.map { $0! }
             return MethodResult(
                 method: plan.method.info,
                 referenced: references?.status[plan.method.info] ?? .unknown,
-                executed: ExecutionStatus.resolve(coverage: plan.reached, mutants: mutantResults),
-                classification: Classifier.classify(mutantResults),
-                mutants: mutantResults
+                executed: ExecutionStatus.resolve(
+                    coverage: plan.reached, mutants: mutantResults + (cases ?? []).flatMap(\.mutants)
+                ),
+                classification: Classifier.classify(mutantResults, cases: cases),
+                mutants: mutantResults,
+                cases: cases
             )
         }
 
@@ -364,7 +436,9 @@ public final class Analyzer: @unchecked Sendable {
 
     // MARK: - Workspace
 
-    private func prepareWorkspace(_ assignments: [(DiscoveredMethod, [Mutant])]) throws {
+    private func prepareWorkspace(
+        _ assignments: [(DiscoveredMethod, [Mutant])], cases: [[[Mutant]]]
+    ) throws {
         let fileManager = FileManager.default
         try? fileManager.removeItem(at: logDirectory)
         try fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
@@ -374,9 +448,13 @@ public final class Analyzer: @unchecked Sendable {
         try fileManager.createDirectory(at: reachedDirectory, withIntermediateDirectories: true)
 
         var schemata: [String: Data] = [:]
-        for (file, fileAssignments) in Dictionary(grouping: assignments, by: { $0.0.info.file }) {
+        for (file, indices) in Dictionary(grouping: assignments.indices, by: { assignments[$0].0.info.file }) {
             let original = try String(contentsOf: configuration.projectPath.appendingPathComponent(file), encoding: .utf8)
-            schemata[file] = Data(SchemataRewriter.rewrite(source: original, methods: fileAssignments).utf8)
+            schemata[file] = Data(
+                SchemataRewriter.rewrite(
+                    source: original, methods: indices.map { assignments[$0] }, cases: indices.map { cases[$0] }
+                ).utf8
+            )
         }
         // In place: files that did not change keep their modification time, and what the last
         // build wrote into the copy stays, so the build only redoes what changed.

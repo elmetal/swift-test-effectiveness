@@ -16,7 +16,7 @@
 
 ## 極端ミューテーションを選んだ理由
 
-1. **コストが小さい。** メソッドあたり 1〜3 ミュータントで済み、`--since` による差分解析なら PR ごとの CI に入る。
+1. **コストが小さい。** メソッドあたり（`--case-mutants` 指定時は switch の case あたりも）1〜3 ミュータントで済み、`--since` による差分解析なら PR ごとの CI に入る。
 2. **出力に反論の余地が小さい。** 「このメソッドの本体を消しても、どのテストも落ちない」という二値の事実で、解釈が要らない。
 3. **同値ミュータント問題が小さい。** 元のプログラムと同じ振る舞いをするミュータントの判定は決定不能（Budd & Angluin 1982）だが、本体を丸ごとデフォルト値に置き換えたミュータントが同値になるのは、メソッド自体が自明な値しか返さない場合にほぼ限られる。
 
@@ -29,7 +29,7 @@
 | 結果 | 条件 | PIE での意味 |
 |---|---|---|
 | `pseudo-tested` | 全ミュータントが生存 | E は成立、I + P が不成立 |
-| `partially-tested` | 一部のミュータントが生存 | 振る舞いの一部しか検証されていない |
+| `partially-tested` | 一部のミュータントが生存。または `--case-mutants` 指定時に、[switch の case](#switch-の-case) のどれかが検証されていない | 振る舞いの一部しか検証されていない |
 | `tested` | 全ミュータントが検出された | 明白な穴はない |
 
 タイムアウトしたミュータントは PIT/Descartes と同じく「検出された」とみなします。
@@ -50,6 +50,98 @@
 | 型指定なしの `throws`（`--throw-mutants` 指定時のみ） | 上記に加えて `throw` |
 | `async` | 変更なし（上記の規則をそのまま適用） |
 
+## switch の case
+
+既定ではオフです。`--case-mutants` で有効になります。
+
+ロジックが switch になっているメソッドは case ごとに検証されるものですが、本体全体のミュータントは、どれか 1 つの case をテストするだけで全て検出されます。
+
+```swift
+func title(for state: LoadState) -> String {
+    switch state {
+    case .idle: "Idle"
+    case .loading: "Loading"
+    case .failed(let message): "Failed: \(message)"
+    }
+}
+```
+
+`.idle` のタイトルをアサートするテストが 1 つあれば、`return ""` も `return "A"` も検出されるので、ほかの case が何を返していてもメソッドは `tested` になります。`--case-mutants` を指定すると、メソッドの末尾にある switch の各 case を、それぞれ 1 つの本体としてミューテーションします。case の先頭で、戻り値型にとって最も単純な値を返します（`Void` ならその場で return します）。レポートは、テストが取りこぼしている case を名指しします。
+
+```
+Sources/App/Presenter.swift:18  Presenter.title(for:) -> String
+    detected: `return ""`, `return "A"`
+    → No test runs `case .loading` (line 21) of `Presenter.title(for:)`. Add a test of this case.
+    → In `case .failed(let message)` (line 22), `Presenter.title(for:)` can `return ""` or `return "A"` without any test failing. Add a test of this case that asserts the result.
+```
+
+### 対象になる switch
+
+本体の最後の文になっている、case が 2 つ以上の switch だけです。この形なら、case の先頭でメソッドを抜けることが「その case が何もしない」ことと同じになります。本体の途中にある switch では、後に続く文まで飛ばしてしまいます。メソッドが暗黙に返す switch 式も、ほかの文（`guard` など）の後にある switch も対象です。
+
+result builder の本体や `some View` を返すメソッドの中の switch、case を `#if` で囲んだ switch（どの case が存在するかがビルド構成で変わる）は対象外です。
+
+### case ごとのミュータント
+
+各 case には、メソッドの戻り値型のミュータント（[戻り値型ごとのミュータント](#戻り値型ごとのミュータント) を参照）を入れます。ただし、検出しようのないものは除きます。
+
+| case | ミュータント |
+|---|---|
+| ミュータントが返すのと同じリテラルを返す（`case .none: return nil`、`case .a: true`） | そのミュータントを除く（`true` には `return false` が残る） |
+| `Void` メソッドで、何もしない（`break`、値のない `return`）か、ログ出力だけ（[arid](#arid-な本体)） | なし |
+| `fatalError()` か `preconditionFailure()` を呼ぶだけ | なし |
+| throw する（`--throw-mutants` 指定時） | `throw` のミュータントを除く |
+
+### 最も単純な値がない戻り値型
+
+enum やプロジェクト独自の型など、汎用的なデフォルト値がない型を返すメソッドには、メソッド自身のミュータントがありません（[対象外](#対象外) を参照）。`--case-mutants` を指定すると、こうしたメソッドを case だけで解析します。各 case には、別の case と同じことをさせます。
+
+```swift
+var tint: Tint {
+    switch self {
+    case .idle: .gray       // ミュータント：`case .loading` と同じことをする
+    case .loading: .blue    // ミュータント：`case .loaded` と同じことをする
+    case .loaded: .green    // ミュータント：`case .failed` と同じことをする
+    case .failed: .red      // ミュータント：`case .idle` と同じことをする
+    }
+}
+```
+
+相手の case は、後ろに続く case から順に（最後まで行ったら先頭から）探し、変数を束縛せず（束縛する case の文はその変数を必要とするため）、かつ違うことをする最初の case にします。
+
+- 次の case には `fallthrough` で移る。
+- それ以外の case からは文を借り、この case の中で実行する。借りるのは、どの文も 1 行に収まり、`fallthrough` も `defer` も含まず、この case が束縛する変数に隠される名前を使っていないときだけ。switch 式では fallthrough できないので、次の case からも同じように式を借りる。
+
+`fatalError()` を呼ぶだけの case は相手にしません。ミュータントがクラッシュするだけになるためです。相手が見つからない case にはミュータントを入れず、どの case にも入らないメソッドは *Not analyzed* のままです。opaque 型（`some ToolbarContent` など）を返すメソッドも同じです。属性がなくても本体が result builder になっていることがあるためです。
+
+```
+Sources/App/LoadState.swift:106  LoadState.tint: Tint
+    → In `case .loading` (line 109), `LoadState.tint` can do what `case .loaded` does without any test failing. Add a test of this case that asserts the result.
+```
+
+### 結果の扱い
+
+case のミュータントは、本体全体のミュータントの後に流します。流すのは、本体全体のミュータントが 1 つでも検出されたメソッドだけです。全て生存したメソッドは `pseudo-tested` で、case を調べても分かることが増えないためです。メソッド自身のミュータントがないメソッドは case だけが手がかりなので、カバレッジで「どのテストも実行しない」と分かっている場合を除いて流します。
+
+各ミュータントは、その case を実行するテストに対して流します。どのテストが実行するかは、各テストスコープが実行するメソッドと一緒に記録します（[テスト選択](../../../README.ja.md#テスト選択)）。スコープ全体がテストスイート全体と一致するとき、どのスコープも実行しなかった case は「どのテストも実行しない case」として報告し、ミュータントは流しません。一致しないときは全テストで流し、ミュータントが生存したほかの case と同じように報告します。
+
+| メソッド | case | 結果 |
+|---|---|---|
+| `tested` | どの case もテストが実行し、case のミュータントが 1 つも生存しない | `tested` |
+| `tested` | どのテストも実行しない case があるか、case のミュータントが生存した | `partially-tested` |
+| `partially-tested`、`pseudo-tested`、`not-covered` | — | 変わらない。case によってメソッドの評価が良くなることはない |
+| 自身のミュータントなし | 流したミュータントが全て生存したか、1 つも流れなかった | `pseudo-tested` |
+| 自身のミュータントなし | どの case もテストが実行し、ミュータントが 1 つも生存しない | `tested` |
+| 自身のミュータントなし | 上記以外 | `partially-tested` |
+
+JSON レポートでは、case を流したメソッドに `cases` が付きます。ミュータントのある case ごとに `label`、`line`、`executed`、`mutants` が入ります。
+
+### case のミュータントの限界
+
+- ミュータントのない case は、どのテストも実行していなくても報告されない。
+- 別の case の文はテキストとして移す。上の条件は構文だけで判定するので、移した先で文がコンパイルできないと、スキーマがビルドできず解析が止まる。その場合は `--case-mutants` を外して実行し、該当する構文を報告してほしい。
+- 本体の途中の switch、result builder の中の switch、`some View` を返すメソッドの中の switch は、case ごとには解析しない。
+
 ## 対象外
 
 | 対象 | 理由 |
@@ -64,7 +156,7 @@
 | 本体がログ出力だけの `Void` メソッド（`--no-arid` 指定時を除く） | ログメッセージをアサートすべきテストはない（[arid な本体](#arid-な本体)） |
 | `rethrows` の関数が返す `some View` | 元の本体を入れるローカル関数を `rethrows` にできない（[詳細](../../../ARCHITECTURE.ja.md#mutant-schemata)） |
 | `View` 以外の result builder | builder がどの構文をサポートするか分からない |
-| タプル、`Result`、ジェネリック型パラメータ、ユーザー定義型、`some View` 以外の opaque 型など | 汎用的なデフォルト値がない |
+| タプル、`Result`、ジェネリック型パラメータ、ユーザー定義型、`some View` 以外の opaque 型など | 汎用的なデフォルト値がない。`--case-mutants` を指定すると、末尾が switch のメソッドは [case ごとに](#最も単純な値がない戻り値型) 解析する |
 
 対象外のメソッドは黙って捨てず、レポートの *Not analyzed* に理由付きで列挙します。
 
@@ -87,7 +179,8 @@
 ## 限界
 
 - 極端ミューテーションは「メソッドが何かしら検証されているか」を見るだけで、検証が十分かは見ない。`tested` は品質の保証ではなく、「明白な穴がない」ことを意味する。詳細な検証は通常のミューテーションテストで行う。
-- 戻り値型がサポート外のメソッドは解析できない（[対象外](#対象外) を参照）。
+- 戻り値型がサポート外のメソッドは解析できない（[対象外](#対象外) を参照）。ただし末尾が switch のメソッドは、case ごとになら解析できる（[switch の case](#switch-の-case) を参照）。
+- switch のどれか 1 つの case をテストすれば、本体全体のミュータントは全て検出される。`--case-mutants` を指定しないと、こうしたメソッドは、テストが確かめている case がどれだけ少なくても `tested` になる。
 
 ## 実装
 
