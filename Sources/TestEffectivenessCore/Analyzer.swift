@@ -230,9 +230,12 @@ public final class Analyzer: @unchecked Sendable {
         var work: [MutantRun] = []
         // A mutant that survives every test that executes its method survives the whole suite.
         let selectionIsExact = recorded?.coversSuite == true && !configuration.rerunSurvivors
+        // Asked of the index only when nothing was recorded, and never for a single scope, which
+        // is the whole suite either way.
+        let indexReach = recorded == nil && (selectable?.count ?? 0) > 1 ? references?.reachingTests() : nil
         for (methodIndex, (method, mutants, reached)) in planned.enumerated() where reached != false {
             // What the scopes executed when the build recorded it; what the index says otherwise.
-            let reaching = recorded.map { $0.scopes[mutants[0].id] ?? [] } ?? references?.reachingTests[method.info]
+            let reaching = recorded.map { $0.scopes[mutants[0].id] ?? [] } ?? indexReach?[method.info]
             let tests = selectable.flatMap { all in
                 TestSelection.tests(reaching: reaching.map { $0.intersection(all) }, all: all)
             }
@@ -344,11 +347,8 @@ public final class Analyzer: @unchecked Sendable {
 
     // MARK: - Workspace
 
-    static let excludedFromCopy: Set<String> = [".build", ".git", ".swiftpm", "DerivedData", "xcuserdata"]
-
     private func prepareWorkspace(_ assignments: [(DiscoveredMethod, [Mutant])]) throws {
         let fileManager = FileManager.default
-        try fileManager.createDirectory(at: copyRoot, withIntermediateDirectories: true)
         try? fileManager.removeItem(at: logDirectory)
         try fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
         try? fileManager.removeItem(at: resultBundleDirectory)
@@ -356,25 +356,20 @@ public final class Analyzer: @unchecked Sendable {
         try? fileManager.removeItem(at: reachedDirectory)
         try fileManager.createDirectory(at: reachedDirectory, withIntermediateDirectories: true)
 
-        // Keep the copy's `.build` so later runs build incrementally and reuse dependency checkouts.
-        for item in try fileManager.contentsOfDirectory(atPath: copyRoot.path) where item != ".build" {
-            try fileManager.removeItem(at: copyRoot.appendingPathComponent(item))
+        var schemata: [String: Data] = [:]
+        for (file, fileAssignments) in Dictionary(grouping: assignments, by: { $0.0.info.file }) {
+            let original = try String(contentsOf: configuration.projectPath.appendingPathComponent(file), encoding: .utf8)
+            schemata[file] = Data(SchemataRewriter.rewrite(source: original, methods: fileAssignments).utf8)
         }
-        for item in try fileManager.contentsOfDirectory(atPath: configuration.projectPath.path)
-        where !Self.excludedFromCopy.contains(item) {
-            let source = configuration.projectPath.appendingPathComponent(item)
-            if source.standardizedFileURL.path == configuration.workDirectory.path { continue }
-            try fileManager.copyItem(at: source, to: copyRoot.appendingPathComponent(item))
-        }
-
-        let byFile = Dictionary(grouping: assignments, by: { $0.0.info.file })
-        for (file, fileAssignments) in byFile {
-            let url = copyRoot.appendingPathComponent(file)
-            let original = try String(contentsOf: url, encoding: .utf8)
-            let rewritten = SchemataRewriter.rewrite(source: original, methods: fileAssignments)
-            try rewritten.write(to: url, atomically: true, encoding: .utf8)
-        }
-        log("Wrote mutant schema to \(copyRoot.path)")
+        // In place: files that did not change keep their modification time, and what the last
+        // build wrote into the copy stays, so the build only redoes what changed.
+        let summary = try WorkspaceCopy.sync(
+            from: configuration.projectPath, to: copyRoot,
+            manifest: configuration.workDirectory.appendingPathComponent("copied-files.json"),
+            skipping: [configuration.workDirectory], contents: schemata
+        )
+        log("Wrote mutant schema to \(copyRoot.path) (\(summary.written) files written, "
+            + "\(summary.unchanged) unchanged, \(summary.removed) removed).")
     }
 
     // MARK: - Build & test

@@ -34,14 +34,16 @@ The pipeline is a set of shared stages around a sequence of method layers, order
 
 Workspace details:
 
-- The copy keeps its own `.build` between runs, so later runs build incrementally and reuse dependency checkouts. `.git`, `.swiftpm`, `DerivedData` and `xcuserdata` are not copied.
+- The copy is updated in place (`WorkspaceCopy.swift`), not deleted and copied again. A file that did not change is not touched, so the build system sees the same file and rebuilds nothing for it; a file counts as unchanged when its size and modification time equal the project's (copies keep the time), and a file with a mutant schema when its contents equal the new schema.
+- What the build writes into the copy stays between runs: `.build` with the dependency checkouts, or a derived data directory given to `xcodebuild`. `copied-files.json` in the work directory lists what the last run copied; files in it that the project no longer has are removed from the copy, and files that are not in it belong to the build. Without the list (a copy from an older version, or a run that failed while copying), everything except `.build` is removed first.
+- Not copied: `.git`, `.swiftpm`, `DerivedData` and `xcuserdata` at the top of the project, and `.build` wherever it is (also the one of a package or a worktree inside the project).
 - Logs for the build, the baseline and each test run go to `.build/test-effectiveness/logs`.
 
 ## Layers
 
 ### Static references
 
-The build writes an index store (`<bin path>/index/store`; `--index-store-path` overrides it). `ReferenceColumn` opens it with [IndexStoreDB](https://github.com/swiftlang/indexstore-db), loading `libIndexStore.dylib` from the toolchain of the `swift` executable. The database goes to `.build/test-effectiveness/index-db` and is rebuilt on every run.
+The build writes an index store (`<bin path>/index/store`; `--index-store-path` overrides it). `ReferenceColumn` opens it with [IndexStoreDB](https://github.com/swiftlang/indexstore-db), loading `libIndexStore.dylib` from the toolchain of the `swift` executable. The database goes to `.build/test-effectiveness/index-db` and is kept between runs, so IndexStoreDB only reads the units that changed in the store; a database it cannot open is deleted and built again.
 
 - Test files are the project files that import `XCTest` or `Testing` and are not production sources. `TestScopeFinder` groups their test declarations into scopes with SwiftSyntax.
 - `ReferenceResolver` collects, for each scope, the members the scope refers to and the concrete types it names. It follows calls into test-target code but not into production code. Each dynamic call (`dynamic` role) is resolved through `overrideOf` relations to the implementation of each named type, walking `baseOf` up to superclasses and `extendedBy` from extensions to their types. Implicit `overrideOf` occurrences record which conformers use a protocol extension's default implementation.
@@ -79,7 +81,7 @@ The baseline stays with `swift test`, which also merges the coverage data. With 
 
 `TestSelection.swift`. The test scopes come from the index: when the static reference layer reads it, `ReferenceColumn` lists every scope as a `TestSelector` (the module from the index, the type or function name from `TestScopeFinder`).
 
-Which scopes execute a method is recorded. Each run of `scopesFailingAlone` (below) gets a file in `<work dir>/reached` through `STE_REACHED`, and the mutant schema appends the methods the run executes to it (see [Mutant schemata](#mutant-schemata)); `selectableTests` turns the files into `RecordedReach.scopes`, the scopes that executed each method. When the runs record nothing, the index stands in: `ReferenceColumn` also follows each scope's calls through production code (`ReferenceResolver.referencedSymbols(scope:throughProductionCode:)`, with the same scope-restricted RTA for dynamic calls) and gives, per method, the scopes that reach it.
+Which scopes execute a method is recorded. Each run of `scopesFailingAlone` (below) gets a file in `<work dir>/reached` through `STE_REACHED`, and the mutant schema appends the methods the run executes to it (see [Mutant schemata](#mutant-schemata)); `selectableTests` turns the files into `RecordedReach.scopes`, the scopes that executed each method. When the runs record nothing, the index stands in (`ReferenceAnalysis.reachingTests`, computed only then, because it is by far the most expensive part of reading the index): `ReferenceColumn` also follows each scope's calls through production code (`ReferenceResolver.referencedSymbols(scope:throughProductionCode:)`, with the same scope-restricted RTA for dynamic calls) and gives, per method, the scopes that reach it.
 
 A mutant runs against those scopes first (`-XCTest` and `--filter` for test bundles started directly, `swift test --filter` otherwise, or `{only-testing}` expanded to `-only-testing:` in custom mode). Whether a mutant that survives them also runs the whole suite depends on `RecordedReach.coversSuite`:
 

@@ -34,7 +34,9 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 
 作業ディレクトリの詳細：
 
-- コピー側の `.build` は実行をまたいで残すので、2 回目以降はインクリメンタルにビルドされ、依存パッケージのチェックアウトも再利用される。`.git`、`.swiftpm`、`DerivedData`、`xcuserdata` はコピーしない。
+- コピーは消して作り直すのではなく、その場で更新する（`WorkspaceCopy.swift`）。変わっていないファイルには触れないので、ビルドシステムからは同じファイルに見え、そのファイルのための再ビルドは起きない。サイズと更新時刻がプロジェクト側と同じファイルは変わっていないとみなす（コピーは更新時刻を保つ）。ミュータントスキーマを書き込むファイルは、内容が新しいスキーマと同じなら変わっていないとみなす。
+- ビルドがコピーの中に書き出したものは、実行をまたいで残る。依存パッケージのチェックアウトを含む `.build` や、`xcodebuild` に指定した DerivedData のディレクトリがこれにあたる。作業ディレクトリの `copied-files.json` に前回コピーしたファイルの一覧を持ち、一覧にあってプロジェクトからなくなったファイルはコピーから削除し、一覧にないファイルはビルドが書いたものとして残す。一覧がないとき（古いバージョンが作ったコピーや、コピーの途中で失敗した実行のあと）は、先に `.build` 以外をすべて削除する。
+- コピーしないもの：プロジェクト直下の `.git`、`.swiftpm`、`DerivedData`、`xcuserdata` と、場所を問わず `.build`（プロジェクト内のパッケージや worktree のものも含む）。
 - ビルド、ベースライン、各テスト実行のログは `.build/test-effectiveness/logs` に書き出す。
 
 ## 層
@@ -46,7 +48,7 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 `ReferenceColumn` は、このストアを [IndexStoreDB](https://github.com/swiftlang/indexstore-db) で開きます。
 
 - `libIndexStore.dylib` は、`swift` 実行ファイルのツールチェーンから読み込みます。
-- データベースは `.build/test-effectiveness/index-db` に置き、実行のたびに作り直します。
+- データベースは `.build/test-effectiveness/index-db` に置き、実行をまたいで残します。IndexStoreDB は、ストアの中で変わったユニットだけを読み直します。開けなかったデータベースは削除して作り直します。
 
 処理の流れ：
 
@@ -90,7 +92,7 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 
 `TestSelection.swift`。テストスコープはインデックスから得ます。静的参照の層がインデックスを読むとき、`ReferenceColumn` がすべてのスコープを `TestSelector` として列挙します（モジュールはインデックスから、型名や関数名は `TestScopeFinder` から取ります）。
 
-どのスコープがメソッドを実行するかは、実際に記録します。`scopesFailingAlone`（後述）の各実行に `STE_REACHED` で `<作業ディレクトリ>/reached` のファイルを渡すと、その実行が通ったメソッドをミュータントスキーマがファイルに追記します（[Mutant schemata](#mutant-schemata) を参照）。`selectableTests` はこのファイルから、メソッドごとにそれを実行したスコープ（`RecordedReach.scopes`）を作ります。何も記録されなかったときは、インデックスで代用します。`ReferenceColumn` は各テストスコープからの呼び出しを本番コードの中まで辿り（`ReferenceResolver.referencedSymbols(scope:throughProductionCode:)`。動的な呼び出しはスコープに限った RTA で同じように解決します）、メソッドごとに、そこに届くスコープを返します。
+どのスコープがメソッドを実行するかは、実際に記録します。`scopesFailingAlone`（後述）の各実行に `STE_REACHED` で `<作業ディレクトリ>/reached` のファイルを渡すと、その実行が通ったメソッドをミュータントスキーマがファイルに追記します（[Mutant schemata](#mutant-schemata) を参照）。`selectableTests` はこのファイルから、メソッドごとにそれを実行したスコープ（`RecordedReach.scopes`）を作ります。何も記録されなかったときは、インデックスで代用します（`ReferenceAnalysis.reachingTests`。インデックスの読み取りの中で飛び抜けて重い処理なので、このときにだけ計算します）。`ReferenceColumn` は各テストスコープからの呼び出しを本番コードの中まで辿り（`ReferenceResolver.referencedSymbols(scope:throughProductionCode:)`。動的な呼び出しはスコープに限った RTA で同じように解決します）、メソッドごとに、そこに届くスコープを返します。
 
 ミュータントはまずこのスコープに対して流します（直接起動したテストバンドルでは `-XCTest` と `--filter`、そうでなければ `swift test --filter`、カスタムモードでは `{only-testing}` を `-only-testing:` に展開）。すり抜けたミュータントを全テストでも流すかどうかは、`RecordedReach.coversSuite` で決まります。
 

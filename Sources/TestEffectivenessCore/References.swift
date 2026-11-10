@@ -353,7 +353,11 @@ struct ReferenceAnalysis {
     var status: [MethodInfo: ReferenceStatus]
     /// For each method, the tests that may execute it: the scopes that reach one of its symbols,
     /// following calls through test and production code. Empty unless test selection asked for it.
-    var reachingTests: [MethodInfo: Set<TestSelector>] = [:]
+    ///
+    /// Computed when called: following every scope through the production code is by far the
+    /// most expensive part of reading the index, and test selection only needs it when the test
+    /// runs did not record what they execute.
+    var reachingTests: () -> [MethodInfo: Set<TestSelector>] = { [:] }
     /// Every test scope found, as a selector.
     var allTests: Set<TestSelector> = []
 }
@@ -378,17 +382,26 @@ enum ReferenceColumn {
         guard FileManager.default.fileExists(atPath: storePath.path) else {
             throw Unavailable(description: "no index store at \(storePath.path)")
         }
-        try? FileManager.default.removeItem(at: databasePath)
-        try FileManager.default.createDirectory(at: databasePath, withIntermediateDirectories: true)
-        let index: IndexStoreDB
-        do {
-            index = try IndexStoreDB(
+        // The database of the last run is kept: IndexStoreDB then only reads the units that
+        // changed in the store. A database it cannot open is thrown away and built again.
+        func open() throws -> IndexStoreDB {
+            try FileManager.default.createDirectory(at: databasePath, withIntermediateDirectories: true)
+            return try IndexStoreDB(
                 storePath: storePath.path, databasePath: databasePath.path,
                 library: IndexStoreLibrary(dylibPath: libraryPath.path),
                 waitUntilDoneInitializing: true, listenToUnitEvents: false
             )
+        }
+        let index: IndexStoreDB
+        do {
+            index = try open()
         } catch {
-            throw Unavailable(description: "could not open the index store: \(error)")
+            try? FileManager.default.removeItem(at: databasePath)
+            do {
+                index = try open()
+            } catch {
+                throw Unavailable(description: "could not open the index store: \(error)")
+            }
         }
         index.pollForUnitChangesAndWait()
         return compute(
@@ -425,20 +438,16 @@ enum ReferenceColumn {
         let resolver = ReferenceResolver(index: index, testFiles: testFiles, projectRoots: roots)
         let referenced = resolver.referencedSymbols(scopes: scopes)
 
-        // Selection follows production code too, so a helper reached only through a public method
-        // still gets the tests of that method.
-        var reachable: [(selector: TestSelector, symbols: Set<String>)] = []
+        var selectors: [(scope: TestScope, selector: TestSelector)] = []
         if selectTests {
             for scope in scopes {
                 guard let module = resolver.moduleName(of: scope) else { continue }
-                reachable.append((
-                    TestSelector(module: module, name: scope.testName, isFunction: scope.isFunction),
-                    resolver.referencedSymbols(scope: scope, throughProductionCode: true)
-                ))
+                selectors.append((scope, TestSelector(module: module, name: scope.testName, isFunction: scope.isFunction)))
             }
         }
 
-        var analysis = ReferenceAnalysis(status: [:], allTests: Set(reachable.map(\.selector)))
+        var analysis = ReferenceAnalysis(status: [:], allTests: Set(selectors.map(\.selector)))
+        var declaredSymbols: [(method: MethodInfo, symbols: Set<String>)] = []
         for method in methods {
             let lines = method.declarationStart.line...max(method.declarationStart.line, method.bodyStart.line)
             let declared = roots.lazy
@@ -449,10 +458,18 @@ enum ReferenceColumn {
                 continue
             }
             analysis.status[method] = declared.isDisjoint(with: referenced) ? .notReferenced : .referenced
-            if selectTests {
-                analysis.reachingTests[method] = Set(
-                    reachable.filter { !$0.symbols.isDisjoint(with: declared) }.map(\.selector)
-                )
+            declaredSymbols.append((method, declared))
+        }
+        if selectTests {
+            analysis.reachingTests = {
+                // Selection follows production code too, so a helper reached only through a
+                // public method still gets the tests of that method.
+                let reachable = selectors.map {
+                    (selector: $0.selector, symbols: resolver.referencedSymbols(scope: $0.scope, throughProductionCode: true))
+                }
+                return Dictionary(declaredSymbols.map { method, declared in
+                    (method, Set(reachable.filter { !$0.symbols.isDisjoint(with: declared) }.map(\.selector)))
+                }, uniquingKeysWith: { $1 })
             }
         }
         return analysis

@@ -88,7 +88,7 @@ cp .build/release/swift-test-effectiveness /usr/local/bin/
 swift-test-effectiveness /path/to/package
 ```
 
-プロジェクトを `<package>/.build/test-effectiveness` にコピーしてそこで解析するので、元のソースは変更しません。最初に、変更していないコードでテストスイートが通る必要があります（ベースライン）。通らなければ解析を中止します。パイプラインは [ARCHITECTURE.ja.md](ARCHITECTURE.ja.md#パイプライン) を参照してください。
+プロジェクトを `<package>/.build/test-effectiveness` にコピーしてそこで解析するので、元のソースは変更しません。コピーは残しておき、次回以降はその場で更新するので、変わった部分だけが再ビルドされます。最初に、変更していないコードでテストスイートが通る必要があります（ベースライン）。通らなければ解析を中止します。パイプラインは [ARCHITECTURE.ja.md](ARCHITECTURE.ja.md#パイプライン) を参照してください。
 
 ### 主なオプション
 
@@ -139,7 +139,7 @@ swift-test-effectiveness /path/to/App \
 
 テストコマンドはミュータントごとに実行され、アクティブなミュータントは `STE_MUTANT` と `TEST_RUNNER_STE_MUTANT` の両方で渡されます（`xcodebuild test` は `TEST_RUNNER_` 付きの環境変数をテストプロセスに転送します）。テストスコープがどのメソッドを実行するかを記録する実行には、書き出し先のファイルを `STE_REACHED` と `TEST_RUNNER_STE_REACHED` で渡します。
 
-ほかの手法には、ビルドとテスト実行が書き出すファイルが必要です。DerivedData の場所を決めてビルドし（相対パスはコピー先のプロジェクトを基準に解決します）、それぞれのファイルを渡します。
+ほかの手法には、ビルドとテスト実行が書き出すファイルが必要です。DerivedData の場所を決めてビルドし（相対パスはコピー先のプロジェクトを基準に解決します。コピー先に置いた DerivedData は次回の実行まで残るので、次回はインクリメンタルにビルドされます）、それぞれのファイルを渡します。
 
 ```bash
 swift-test-effectiveness /path/to/App \

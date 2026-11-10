@@ -79,7 +79,7 @@ Check the installed version with `swift-test-effectiveness --version`.
 swift-test-effectiveness /path/to/package
 ```
 
-The project is copied to `<package>/.build/test-effectiveness` and analysed there, so your original sources are never modified. The test suite must first pass on the unmodified code (the baseline); otherwise the analysis stops. See [ARCHITECTURE.md](ARCHITECTURE.md#pipeline) for the pipeline.
+The project is copied to `<package>/.build/test-effectiveness` and analysed there, so your original sources are never modified. The copy is kept and updated on later runs, so they only rebuild what changed. The test suite must first pass on the unmodified code (the baseline); otherwise the analysis stops. See [ARCHITECTURE.md](ARCHITECTURE.md#pipeline) for the pipeline.
 
 ### Options
 
@@ -130,7 +130,7 @@ swift-test-effectiveness /path/to/App \
 
 The test command is run once per mutant, with the active mutant exported as both `STE_MUTANT` and `TEST_RUNNER_STE_MUTANT` (`xcodebuild test` forwards `TEST_RUNNER_`-prefixed variables to the test process). The runs that record which methods a test scope executes get the file to write to as `STE_REACHED` and `TEST_RUNNER_STE_REACHED`.
 
-The other methods need files that the build and the test run write. Build into a known derived data path (relative paths are resolved inside the copied project) and point the tool at them:
+The other methods need files that the build and the test run write. Build into a known derived data path (relative paths are resolved inside the copied project, and a derived data directory there is kept for the next run, which then builds incrementally) and point the tool at them:
 
 ```bash
 swift-test-effectiveness /path/to/App \
