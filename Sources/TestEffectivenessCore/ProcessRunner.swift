@@ -121,7 +121,7 @@ public enum ProcessRunner {
         var argv = ["/bin/sh", "-c", script]
         #if canImport(Darwin)
         if withoutShell {
-            posix_spawn_file_actions_addchdir_np(&fileActions, directory.path)
+            posix_spawn_file_actions_addchdir(&fileActions, directory.path)
             argv = arguments
         }
         #endif

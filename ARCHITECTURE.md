@@ -65,7 +65,7 @@ Each mutant run executes the tests with `STE_MUTANT=<id>` in the environment: fo
 
 `DirectTestLauncher.swift`. `swift test --skip-build` loads the package and plans the build before it starts the tests (about a second per run) and locks `.build`. For the runs after the baseline, the tool does what `swift test` does last instead: for each test bundle in the build's bin path (`<target>.xctest` per test target, or `<Package>PackageTests.xctest` with the older build system) it starts `xctest <bundle>` for XCTest and `swiftpm-testing-helper --test-bundle-path <binary> … --testing-library swift-testing` for Swift Testing.
 
-- The processes get `DYLD_FRAMEWORK_PATH` and `DYLD_LIBRARY_PATH` for the platform's `XCTest.framework` and `Testing.framework`. `/bin/sh` is a protected binary and drops `DYLD_*`, so `ProcessRunner` starts these commands without a shell (`withoutShell`, `posix_spawn_file_actions_addchdir_np`).
+- The processes get `DYLD_FRAMEWORK_PATH` and `DYLD_LIBRARY_PATH` for the platform's `XCTest.framework` and `Testing.framework`. `/bin/sh` is a protected binary and drops `DYLD_*`, so `ProcessRunner` starts these commands without a shell (`withoutShell`, `posix_spawn_file_actions_addchdir`).
 - `xctest` gets `SWIFT_TESTING_ENABLED=0`; without it, it runs the bundle's Swift Testing tests as well.
 - A selection becomes `-XCTest <Module>.<Type>,…` for the type selectors and `--filter` for Swift Testing; only the bundles of the selected modules start. Swift Testing exits with 69 when no test matches, which is not a failure.
 - A run stops at the first process that fails; the timeout is for all of its processes together.
