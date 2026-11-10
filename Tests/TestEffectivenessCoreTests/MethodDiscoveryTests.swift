@@ -112,8 +112,62 @@ struct MethodDiscoveryTests {
         }
         """)
         #expect(methods.map(\.isResultBuilder) == [true, true, false])
-        #expect(methods[0].mutations == [.emptyView])
-        #expect(methods[2].mutations.isEmpty)
+        #expect(methods.map(\.mutations) == [[.emptyView], [.emptyView], [.emptyView]])
+        // Only the body outside a result builder moves into a local function.
+        #expect(methods.map { $0.opaqueBody != nil } == [false, false, true])
+    }
+
+    /// The local function repeats the effects and the result type, and is a view builder unless
+    /// the body returns explicitly (a `return` in a closure is not one of the body).
+    @Test func someViewOutsideAResultBuilderKeepsItsBodyInALocalFunction() {
+        let methods = discover("""
+        func single() -> some View { Text("a") }
+        func returning() -> some View { let a = "a"; return Text(a) }
+        func nested() -> some View { ForEach(items) { item in return Text(item) } }
+        func effects() async throws -> some SwiftUI.View { try await load() }
+        func typed() throws(E) -> some View { if flag { return Text("a") }; return Text("b") }
+        var getter: some View { get async { Text("a") } }
+        func value() -> Int { 1 }
+        """)
+        #expect(methods.map(\.opaqueBody) == [
+            OpaqueBody(isViewBuilder: true, signature: "-> some View", callEffects: ""),
+            OpaqueBody(isViewBuilder: false, signature: "-> some View", callEffects: ""),
+            OpaqueBody(isViewBuilder: true, signature: "-> some View", callEffects: ""),
+            OpaqueBody(isViewBuilder: true, signature: "async throws -> some SwiftUI.View", callEffects: "try await "),
+            OpaqueBody(isViewBuilder: false, signature: "throws(E) -> some View", callEffects: "try "),
+            OpaqueBody(isViewBuilder: true, signature: "async -> some View", callEffects: "await "),
+            nil,
+        ])
+        // The body stays as it is: no `return` is inserted.
+        #expect(methods.dropLast().allSatisfy { $0.implicitReturnInsertion == nil })
+    }
+
+    /// With an explicit `return` the builder is off, so the `if`/`else` of the result builder
+    /// schema would not compile: the body is an ordinary one.
+    @Test func explicitReturnTurnsAResultBuilderOff() {
+        let methods = discover("""
+        struct V: View {
+            var body: some View { let title = "a"; return Text(title) }
+            @ViewBuilder func row() -> some View { return Text("b") }
+            @ViewBuilder func list() -> some View { ForEach(items) { item in return Text(item) } }
+            @ArrayBuilder func numbers() -> [Int] { return [1] }
+            func local() -> some View { var title: String { return "c" }; Text(title) }
+        }
+        """)
+        #expect(methods.map(\.isResultBuilder) == [false, false, true, false, false])
+        #expect(methods.map { $0.opaqueBody?.isViewBuilder } == [false, false, nil, nil, true])
+        #expect(methods.map(\.mutations) == [[.emptyView], [.emptyView], [.emptyView], [.returnEmptyArray], [.emptyView]])
+    }
+
+    @Test func someViewFromARethrowingFunctionIsSkipped() {
+        let methods = discover("func make(_ f: () throws -> String) rethrows -> some View { Text(try f()) }")
+        #expect(methods[0].decision == .skip(reason: "`some View` returned from a `rethrows` function"))
+        #expect(methods[0].opaqueBody == nil)
+    }
+
+    @Test func throwMutantFollowsTheViewMutant() {
+        let methods = discover("func load() throws -> some View { Text(try text()) }", throwMutants: true)
+        #expect(methods[0].mutations == [.emptyView, .throwError])
     }
 
     @Test func throwMutantsAreOptInAndOnlyForUntypedThrows() {

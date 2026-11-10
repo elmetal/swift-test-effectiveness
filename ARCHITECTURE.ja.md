@@ -126,20 +126,26 @@ func add(_ a: Int, _ b: Int) -> Int { switch __steActiveMutant { case 1: return 
 var body: some View { if __steMutantIs(7) { EmptyView() } else {
     Text("Hello")
 } }
+
+// result builder 外の `some View` の場合
+func badge() -> some View { func __steOriginal() -> some View {
+    return Circle().frame(width: 8)
+}; return __steMutantIs(8) ? ViewBuilder.buildEither(first: EmptyView()) : ViewBuilder.buildEither(second: __steOriginal()) }
 ```
 
 書き換えで守るべき不変条件：
 
 - **行番号が元のソースと一致する。** 挿入はすべて既存の行の中で行う。そのため、カバレッジ（llvm-cov の関数リージョンは本体の `{` から始まる）をそのまま元の宣言に対応付けられ、コンパイルエラーの行番号も元のソースと同じになる。挿入は列を右にずらすだけなので、1 行に複数の関数が始まる場合の `CoverageMap.wasExecuted` の対応付けはこれを前提にしている。コピーを書き換える層を他に足す場合も、この不変条件を守る必要がある。
 - **単一式の本体には明示的な `return` を補う。** `if`/`switch` 式も同様だが、内部に `return` 文を含む場合は文として扱う。
+- **opaque 型を返す本体はローカル関数に入れる。** `some View` を返すメソッドでは、すべての `return` が同じ具象型でなければならないので、元の本体の前でミュータントが `return` することはできない。そこで本体をローカル関数 `__steOriginal` に移す。元の `return` はその中に閉じ、メソッドの `return` は 1 つになる。`buildEither` は view builder の `if`/`else` が変換される先なので、型は result builder のスキーマと同じになる。ローカル関数にはメソッドの `async` と `throws` をそのまま付ける。本体に `return` がなければ `@ViewBuilder` にする。`ViewModifier.body(content:)` のような要件では、属性を書かなくても本体が view builder になり、明示的な `return` があるとそれが無効になる。`return` のない本体は、どちらの場合も builder として有効である。同じ理由で、明示的に `return` する `var body` や `@ViewBuilder` の本体も、builder の中でしかコンパイルできない `if`/`else` のスキーマではなく、このスキーマにする。
 - **スイッチはファイル単位。** `__steActiveMutant` は各ファイルの末尾に `nonisolated fileprivate let` として生成し、`getenv` で読む。ビルド設定やプロジェクトファイルを変更する必要がなく、`defaultIsolation(MainActor.self)` のモジュールでも動く。
-- **スイッチは記録も兼ねる。** 環境変数に `STE_REACHED=<ファイル>` があると、どのミュータントも有効にならず、スイッチの値は `-2` になる。各メソッドの `case -2`（result builder では `__steMutantIs`）が、そのメソッドの最初のミュータントの ID を渡して `__steReached` を呼び、メソッドが最初に実行されたときに ID を 1 行としてファイルに追記する。書き出し済みかどうかは、ファイルごとに持つミュータント ID 1 つにつき 1 バイトの領域で覚える。書き込みは `O_APPEND` で開いたディスクリプタへの `write(2)` 1 回なので、1 回の実行の複数のプロセスやスレッドが同じファイルを共有でき、クラッシュしても記録は失われない。`STE_REACHED` がなければ、追加した case のコストはない。
+- **スイッチは記録も兼ねる。** 環境変数に `STE_REACHED=<ファイル>` があると、どのミュータントも有効にならず、スイッチの値は `-2` になる。各メソッドの `case -2`（`some View` では `__steMutantIs`）が、そのメソッドの最初のミュータントの ID を渡して `__steReached` を呼び、メソッドが最初に実行されたときに ID を 1 行としてファイルに追記する。書き出し済みかどうかは、ファイルごとに持つミュータント ID 1 つにつき 1 バイトの領域で覚える。書き込みは `O_APPEND` で開いたディスクリプタへの `write(2)` 1 回なので、1 回の実行の複数のプロセスやスレッドが同じファイルを共有でき、クラッシュしても記録は失われない。`STE_REACHED` がなければ、追加した case のコストはない。
 
 これにより、ミュータントを入れられない宣言が生じます（[対象外](docs/ja/methods/extreme-mutation.md#対象外) を参照）。
 
 - `@inlinable`、`@_transparent`、`@_alwaysEmitIntoClient` の本体からは `fileprivate` の宣言を参照できない。
 - `main.swift` ではトップレベルコードが順に実行されるため、スイッチの初期化前にメソッドが呼ばれうる。
-- result builder 外の `some View` は、挿入した分岐の両側で同じ具象型が必要になる。
+- `rethrows` の関数が返す `some View`。ローカル関数は throw する引数を自分では持たないので、`rethrows` にできない。
 
 カスタムモードでは、アクティブなミュータントを `STE_MUTANT` と `TEST_RUNNER_STE_MUTANT` の両方で渡します。`xcodebuild test` は `TEST_RUNNER_` 付きの環境変数をテストプロセスに転送するためです。`STE_REACHED` も同じように渡します。
 
@@ -149,7 +155,7 @@ var body: some View { if __steMutantIs(7) { EmptyView() } else {
 - `Tests/Fixtures/SampleProject` は各指摘が 1 つ以上現れる小さなパッケージ。統合テストで各メソッドの指摘を検証する。
 - `Tests/Fixtures/ReferencedProject` は referenced 列のためのパッケージ。protocol やスーパークラス経由の呼び出し、モックの注入、デフォルト実装、XCTestCase の `setUp()`、別のメソッド経由でしか実行されないメソッドを含む。
 - `Tests/Fixtures/HangingProject` は、ループが終わらなくなるミュータントを持つパッケージ。統合テストで、選んだテストの短いタイムアウトのあとにタイムアウトとして報告されることを確認する。
-- `Tests/Fixtures/EdgeCases` は、if/switch 式、result builder、`throws`、actor、`defaultIsolation(MainActor)` など、書き換え後もコンパイルできなければならない構文の集まり。書き換え処理を変更するときはここにケースを足す。
+- `Tests/Fixtures/EdgeCases` は、if/switch 式、result builder、result builder 外の `some View`、`throws`、actor、`defaultIsolation(MainActor)` など、書き換え後もコンパイルできなければならない構文の集まり。書き換え処理を変更するときはここにケースを足す。
 
 ## 手法を追加するとき
 

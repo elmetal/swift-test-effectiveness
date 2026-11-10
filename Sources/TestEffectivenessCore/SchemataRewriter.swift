@@ -20,6 +20,15 @@ import Foundation
 ///         Text("Hello")
 ///     } }
 ///
+/// For `some View` returned outside a result builder with mutant 8, the original body moves into a
+/// local function, because every `return` of a method with an opaque result must have one type:
+///
+///     func badge() -> some View { func __steOriginal() -> some View {
+///         return Circle().frame(width: 8)
+///     }; return __steMutantIs(8) ? ViewBuilder.buildEither(first: EmptyView()) : ViewBuilder.buildEither(second: __steOriginal()) }
+///
+/// The local function is a `@ViewBuilder` when the body has no `return` (see `OpaqueBody`).
+///
 /// The same switch records which methods a test run executes: with `STE_REACHED=<file>` no mutant
 /// is active, and each method appends the id of its first mutant to the file when it is first
 /// called (see `ReachedMethods`).
@@ -29,6 +38,8 @@ public enum SchemataRewriter {
     public static let reachedEnvironmentVariable = "STE_REACHED"
     static let switchName = "__steActiveMutant"
     static let errorTypeName = "__STEExtremeMutationError"
+    /// The local function that keeps the original body of a method with an opaque result.
+    static let originalBodyName = "__steOriginal"
     /// The value of the switch while recording; never a mutant id.
     static let recordingValue = -2
 
@@ -69,6 +80,25 @@ public enum SchemataRewriter {
                     text: " if __steMutantIs(\(mutant.id)) { \(mutant.mutation.replacementStatement) } else {"
                 ),
                 Insertion(offset: method.bodyContentEnd, text: " } "),
+            ]
+        }
+        if let opaque = method.opaqueBody {
+            // The first mutant is the view; a `throw` mutant may follow. `buildEither` is what an
+            // `if`/`else` in a view builder becomes, so both schemas give the method the same type.
+            let view = mutants[0]
+            let others = mutants.dropFirst()
+                .map { "if \(switchName) == \($0.id) { \($0.mutation.replacementStatement) }; " }.joined()
+            return [
+                Insertion(
+                    offset: method.bodyContentStart,
+                    text: " \(opaque.isViewBuilder ? "@ViewBuilder " : "")func \(originalBodyName)() \(opaque.signature) {"
+                ),
+                Insertion(
+                    offset: method.bodyContentEnd,
+                    text: " }; \(others)return \(opaque.callEffects)__steMutantIs(\(view.id))"
+                        + " ? ViewBuilder.buildEither(first: \(view.mutation.replacementStatement))"
+                        + " : ViewBuilder.buildEither(second: \(originalBodyName)()) "
+                ),
             ]
         }
         let cases = mutants.map { "case \($0.id): \($0.mutation.replacementStatement)" }.joined(separator: "; ")

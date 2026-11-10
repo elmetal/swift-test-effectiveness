@@ -46,7 +46,7 @@ As in PIT/Descartes, a mutant that times out counts as detected.
 | `[T]` / `Array` / `Set` / `ContiguousArray` | `return []` |
 | `[K: V]` / `Dictionary` | `return [:]` |
 | `Data` | `return Data()` |
-| `some View` inside a result builder (`var body`, `@ViewBuilder`) | `EmptyView()` |
+| `some View` (`var body`, `@ViewBuilder`, or a function or getter without a result builder) | `EmptyView()` |
 | untyped `throws` (only with `--throw-mutants`) | `throw`, in addition to the above |
 | `async` | unchanged (the rules above apply as-is) |
 
@@ -62,9 +62,9 @@ As in PIT/Descartes, a mutant that times out counts as detected.
 | `@inlinable` / `@_transparent` / `@_alwaysEmitIntoClient` | the mutant switch cannot be reached from their bodies ([details](../../ARCHITECTURE.md#mutant-schemata)) |
 | declarations in `main.swift` | top-level code initialisation order |
 | methods returning `Void` whose body only logs (unless `--no-arid`) | no test should assert on a log message ([arid bodies](#arid-bodies)) |
-| `some View` returned outside a result builder | an opaque type needs the same concrete type on every branch |
+| `some View` returned from a `rethrows` function | the local function that keeps the original body cannot be `rethrows` ([details](../../ARCHITECTURE.md#mutant-schemata)) |
 | result builders other than `View` | unknown which constructs the builder supports |
-| tuples, `Result`, generic type parameters, user-defined types, … | no general default value |
+| tuples, `Result`, generic type parameters, user-defined types, opaque types other than `some View`, … | no general default value |
 
 Methods that are not targeted are not silently dropped: the report lists them under *Not analyzed* with the reason.
 

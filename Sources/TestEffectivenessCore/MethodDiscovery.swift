@@ -14,6 +14,9 @@ public struct DiscoveredMethod: Sendable {
     /// once statements are placed in front of it.
     var implicitReturnInsertion: Int?
     var isResultBuilder: Bool
+    /// Set when the method returns `some View` outside a result builder: the original body is then
+    /// kept in a local function (see `SchemataRewriter`).
+    var opaqueBody: OpaqueBody?
     /// Declared inside an `#if` clause. Whether that clause is active depends on the build
     /// configuration, so the method may not be compiled at all.
     var isConditionallyCompiled: Bool = false
@@ -22,6 +25,25 @@ public struct DiscoveredMethod: Sendable {
         if case .mutate(let mutations) = decision { return mutations }
         return []
     }
+}
+
+/// The local function that keeps the original body of a method returning an opaque type.
+///
+/// Every `return` of such a method must have the same concrete type, so a mutant cannot return in
+/// front of the original body. Inside a local function the original `return`s are on their own,
+/// and the method returns once, with one type for the mutant and the original.
+struct OpaqueBody: Equatable, Sendable {
+    /// Whether the local function is a `@ViewBuilder`: when the body has no `return`.
+    ///
+    /// A requirement such as `ViewModifier.body(content:)` makes the body a view builder without
+    /// the attribute being written, which a local function would lose. An explicit `return` turns
+    /// the builder off, so a body with one is not a builder, and a body without one is valid as a
+    /// builder: it is either builder syntax already, or a single expression.
+    var isViewBuilder: Bool
+    /// Effects and result type as declared, e.g. `async throws -> some View`.
+    var signature: String
+    /// `try await `, as far as the declaration throws and is async.
+    var callEffects: String
 }
 
 public struct DiscoveryOptions: Sendable {
@@ -132,6 +154,7 @@ public enum MethodDiscovery {
                 returnType: returnType,
                 isResultBuilder: isBuilder,
                 canThrow: throwsUntyped && throwsClause?.throwsSpecifier.tokenKind == .keyword(.throws),
+                effects: Effects(async: node.signature.effectSpecifiers?.asyncSpecifier, throws: throwsClause),
                 leftBrace: body.leftBrace,
                 rightBrace: body.rightBrace,
                 statements: body.statements
@@ -157,7 +180,7 @@ public enum MethodDiscovery {
             case .getter(let statements):
                 record(
                     decl: Syntax(node), name: name, kind: .getter, attributes: attributeNames(node.attributes),
-                    returnType: returnType, isResultBuilder: isBuilder, canThrow: false,
+                    returnType: returnType, isResultBuilder: isBuilder, canThrow: false, effects: Effects(),
                     leftBrace: accessorBlock.leftBrace, rightBrace: accessorBlock.rightBrace,
                     statements: statements
                 )
@@ -170,6 +193,9 @@ public enum MethodDiscovery {
                     attributes: attributeNames(node.attributes) + attributeNames(getter.attributes),
                     returnType: returnType, isResultBuilder: isBuilder || hasBuilderAttribute(getter.attributes),
                     canThrow: false,
+                    effects: Effects(
+                        async: getter.effectSpecifiers?.asyncSpecifier, throws: getter.effectSpecifiers?.throwsClause
+                    ),
                     leftBrace: body.leftBrace, rightBrace: body.rightBrace, statements: body.statements
                 )
             }
@@ -178,11 +204,31 @@ public enum MethodDiscovery {
 
         // MARK: Recording
 
+        /// The `async` and `throws` of a function or a getter, as written.
+        private struct Effects {
+            var async: TokenSyntax?
+            var `throws`: ThrowsClauseSyntax?
+
+            var isRethrowing: Bool { `throws`?.throwsSpecifier.tokenKind == .keyword(.rethrows) }
+
+            /// `async throws(E) -> some View`
+            func signature(returning type: TypeSyntax) -> String {
+                ([async?.trimmedDescription, `throws`?.trimmedDescription].compactMap { $0 }
+                    + ["->", type.trimmedDescription]).joined(separator: " ")
+            }
+
+            var call: String { (`throws` == nil ? "" : "try ") + (async == nil ? "" : "await ") }
+        }
+
         private func record(
             decl: Syntax, name: String, kind: MethodInfo.Kind, attributes: [String],
-            returnType: TypeSyntax?, isResultBuilder: Bool, canThrow: Bool,
+            returnType: TypeSyntax?, isResultBuilder: Bool, canThrow: Bool, effects: Effects,
             leftBrace: TokenSyntax, rightBrace: TokenSyntax, statements: CodeBlockItemListSyntax
         ) {
+            // An explicit `return` turns a result builder off, written or implied: the body is
+            // then an ordinary one.
+            let returnsExplicitly = statements.contains { ReturnFinder.containsReturn(Syntax($0)) }
+            let isResultBuilder = isResultBuilder && !returnsExplicitly
             let info = MethodInfo(
                 file: path,
                 name: name,
@@ -194,6 +240,7 @@ public enum MethodDiscovery {
             )
 
             var decision: MutationOperators.Decision
+            var opaqueBody: OpaqueBody?
             if let attribute = attributes.first(where: inliningAttributes.contains) {
                 decision = .skip(reason: "`@\(attribute)` body cannot reference the mutant switch")
             } else if leftBrace.presence == .missing || rightBrace.presence == .missing {
@@ -205,6 +252,17 @@ public enum MethodDiscovery {
                 if case .mutate(let mutations) = decision, mutations == [.emptyBody], let arid = options.arid, arid.isArid(statements) {
                     decision = .skip(reason: AridDetector.skipReason)
                 }
+                if case .mutate([.emptyView]) = decision, !isResultBuilder, let returnType {
+                    if effects.isRethrowing {
+                        // A local function cannot be `rethrows`: it has no parameter that throws.
+                        decision = .skip(reason: "`\(returnType.trimmedDescription)` returned from a `rethrows` function")
+                    } else {
+                        opaqueBody = OpaqueBody(
+                            isViewBuilder: !returnsExplicitly,
+                            signature: effects.signature(returning: returnType), callEffects: effects.call
+                        )
+                    }
+                }
                 if case .mutate(var mutations) = decision, options.includeThrowMutants, canThrow, !isResultBuilder {
                     mutations.append(.throwError)
                     decision = .mutate(mutations)
@@ -212,7 +270,8 @@ public enum MethodDiscovery {
             }
 
             var implicitReturn: Int?
-            if case .mutate(let mutations) = decision, !isResultBuilder,
+            // The body of a local function keeps its implicit return.
+            if case .mutate(let mutations) = decision, !isResultBuilder, opaqueBody == nil,
                !mutations.contains(.emptyBody) {
                 implicitReturn = implicitReturnOffset(statements)
             }
@@ -224,6 +283,7 @@ public enum MethodDiscovery {
                 bodyContentEnd: rightBrace.positionAfterSkippingLeadingTrivia.utf8Offset,
                 implicitReturnInsertion: implicitReturn,
                 isResultBuilder: isResultBuilder,
+                opaqueBody: opaqueBody,
                 isConditionallyCompiled: ifConfigDepth > 0
             ))
         }
@@ -270,7 +330,7 @@ public enum MethodDiscovery {
         }
     }
 
-    /// Finds `return` statements, ignoring nested closures and functions.
+    /// Finds `return` statements, ignoring nested closures, functions and accessors.
     private final class ReturnFinder: SyntaxVisitor {
         var found = false
 
@@ -286,5 +346,7 @@ public enum MethodDiscovery {
         }
         override func visit(_ node: ClosureExprSyntax) -> SyntaxVisitorContinueKind { .skipChildren }
         override func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind { .skipChildren }
+        override func visit(_ node: InitializerDeclSyntax) -> SyntaxVisitorContinueKind { .skipChildren }
+        override func visit(_ node: AccessorBlockSyntax) -> SyntaxVisitorContinueKind { .skipChildren }
     }
 }

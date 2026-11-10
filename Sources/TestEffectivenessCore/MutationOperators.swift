@@ -10,7 +10,7 @@ import SwiftSyntax
 /// - `String` / `Substring` → `""` and `"A"`
 /// - `[T]`, `Array`, `Set`, `ContiguousArray` → `[]`; `Data` → `Data()`
 /// - `[K: V]`, `Dictionary` → `[:]`
-/// - `some View` inside a result builder → `EmptyView()`
+/// - `some View` → `EmptyView()`, inside a result builder or not
 /// - `Never` and anything else → not analyzed (reported with a reason)
 ///
 /// When the throw operator is enabled, untyped `throws` methods also get a `throw` mutant.
@@ -41,9 +41,7 @@ public enum MutationOperators {
             let constraint = opaque.constraint.trimmedDescription
             if opaque.someOrAnySpecifier.tokenKind == .keyword(.some),
                constraint == "View" || constraint == "SwiftUI.View" {
-                return isResultBuilder
-                    ? .mutate([.emptyView])
-                    : .skip(reason: "`some View` returned outside a result builder")
+                return .mutate([.emptyView])
             }
             return .skip(reason: "unsupported return type `\(type.trimmedDescription)`")
         }

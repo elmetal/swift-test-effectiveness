@@ -16,3 +16,25 @@ import Testing
     model.increment()
     #expect(model.label == "count: 1")
 }
+
+#if canImport(SwiftUI)
+import SwiftUI
+
+/// `some View` outside a result builder. A view's description shows what it is made of.
+@MainActor @Test func viewsOutsideAResultBuilder() async throws {
+    let greeting = Greeting()
+    // Checked.
+    #expect(String(describing: greeting.severalReturns(true)).contains("on!"))
+    #expect(String(describing: Greeting.badge(3)).contains("badge 3"))
+    #expect(String(describing: greeting.explicitGetter).contains("getter"))
+    var tally = Tally()
+    _ = tally.next()
+    #expect(tally.count == 1)
+    #expect(String(describing: Returning().body).contains("returning"))
+    // Only executed.
+    _ = greeting.header
+    _ = greeting.plain()
+    _ = try await greeting.asyncThrowing()
+    _ = Text("x").modifier(Card(bordered: true))
+}
+#endif

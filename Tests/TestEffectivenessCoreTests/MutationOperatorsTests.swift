@@ -49,15 +49,13 @@ struct MutationOperatorsTests {
         #expect(decision("Data") == .mutate([.returnEmptyData]))
     }
 
-    @Test func someViewOnlyInsideResultBuilder() {
-        #expect(decision("some View", builder: true) == .mutate([.emptyView]))
-        guard case .skip = decision("some View") else {
-            Issue.record("`some View` outside a builder must be skipped")
-            return
-        }
+    @Test(arguments: ["some View", "some SwiftUI.View"])
+    func someViewReturnsEmptyViewInsideAResultBuilderOrNot(_ type: String) {
+        #expect(decision(type, builder: true) == .mutate([.emptyView]))
+        #expect(decision(type) == .mutate([.emptyView]))
     }
 
-    @Test(arguments: ["Never", "(Int, Int)", "Result<Int, Error>", "T", "some Collection"])
+    @Test(arguments: ["Never", "(Int, Int)", "Result<Int, Error>", "T", "some Collection", "any View", "some Shape"])
     func unsupportedTypesAreSkipped(_ type: String) {
         guard case .skip = decision(type) else {
             Issue.record("expected \(type) to be skipped")
