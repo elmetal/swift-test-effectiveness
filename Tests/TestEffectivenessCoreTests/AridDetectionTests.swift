@@ -40,6 +40,9 @@ struct AridDetectionTests {
             func conditional() {
                 if verbose { print("a") } else if !verbose { print("b") } else { print("c") }
             }
+            func withoutElse() {
+                if verbose { print("a") }
+            }
             func debugOnly() {
                 #if DEBUG
                 print("x")
@@ -60,6 +63,8 @@ struct AridDetectionTests {
             func otherCall() { save() }
             func callInCondition() { if cache.remove("k") != nil { print("removed") } }
             func callInGuard() { guard flush() else { return }; print("x") }
+            func effectInElseIf() { if verbose { print("a") } else if quiet { reset() } }
+            func effectInElse() { if verbose { print("a") } else { reset() } }
             func notALogger() { formatter.info("x") }
             func notALoggingMethod() { logger.flush() }
             func debugBranchWithEffect() {
@@ -73,7 +78,7 @@ struct AridDetectionTests {
         }
         """)
         #expect(result.filter { $0.value }.isEmpty, "\(result)")
-        #expect(result.count == 9)
+        #expect(result.count == 11)
     }
 
     @Test func throwingLoggingMethodGetsNoThrowMutant() {

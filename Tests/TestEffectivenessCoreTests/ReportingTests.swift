@@ -167,6 +167,30 @@ struct ReporterTests {
         #expect(text.contains("can always return `true` without any test failing. Add a case where it must return `false`."))
     }
 
+    @Test func everySectionHasItsTitle() {
+        #expect(Reporter.sectionOrder.map(Reporter.title) == ["Pseudo-tested", "Partially tested", "Not covered", "Tested"])
+    }
+
+    /// The feedback for a surviving mutant says what the method can do unnoticed, and what to assert.
+    @Test func adviceForEachMutation() {
+        let expected: [(ExtremeMutation, String)] = [
+            (.emptyBody, "Removing the whole body of `Calc.f()` breaks no test. Assert its side effects (state changes, calls made, output)."),
+            (.returnNil, "`Calc.f()` can return `nil` without any test failing. Assert the value it returns."),
+            (.returnBool(true), "`Calc.f()` can always return `true` without any test failing. Add a case where it must return `false`."),
+            (.returnBool(false), "`Calc.f()` can always return `false` without any test failing. Add a case where it must return `true`."),
+            (.returnNumber("0"), "`Calc.f()` can always return `0` without any test failing. Assert the exact value."),
+            (.returnString("A"), "`Calc.f()` can always return `\"A\"` without any test failing. Assert the exact string."),
+            (.returnEmptyArray, "`Calc.f()` can always return an empty collection without any test failing. Assert the elements."),
+            (.returnEmptyDictionary, "`Calc.f()` can always return an empty collection without any test failing. Assert the elements."),
+            (.returnEmptyData, "`Calc.f()` can always return an empty collection without any test failing. Assert the elements."),
+            (.emptyView, "`Calc.f()` can render nothing without any test failing. Add a UI, snapshot or view-inspection test."),
+            (.throwError, "`Calc.f()` can always throw without any test failing. Assert that it succeeds for valid input."),
+        ]
+        for (mutation, advice) in expected {
+            #expect(Reporter.advice(for: mutation, method: "Calc.f()") == advice)
+        }
+    }
+
     @Test(arguments: ReportFormat.allCases)
     func reportsContainNoAggregateScore(_ format: ReportFormat) throws {
         let rendered = try Reporter.render(report, format: format)
