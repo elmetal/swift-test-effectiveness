@@ -26,15 +26,22 @@ public struct ChangedLines: Sendable {
         guard root.exitCode == 0 else { throw AnalysisError.git(root.output) }
         let rootPath = root.output.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // The user's git configuration must not change how paths are written: `core.quotePath`
+        // escapes non-ASCII names, `diff.mnemonicPrefix` and `diff.noprefix` change the `b/` in
+        // front of them, and `diff.relative` makes them relative to `directory`.
+        let git = ["git", "-c", "core.quotePath=false"]
         let diff = try ProcessRunner.run(
-            ["git", "diff", "--unified=0", "--no-color", "--no-ext-diff", revision, "--", "*.swift"],
+            git + [
+                "diff", "--unified=0", "--no-color", "--no-ext-diff", "--no-relative",
+                "--src-prefix=a/", "--dst-prefix=b/", revision, "--", "*.swift",
+            ],
             in: directory
         )
         guard diff.exitCode == 0 else { throw AnalysisError.git(diff.output) }
 
         // `git diff <revision>` does not show files that were never added.
         let untracked = try ProcessRunner.run(
-            ["git", "ls-files", "--others", "--exclude-standard", "--full-name", "--", "*.swift"],
+            git + ["ls-files", "--others", "--exclude-standard", "--full-name", "--", "*.swift"],
             in: directory
         )
         guard untracked.exitCode == 0 else { throw AnalysisError.git(untracked.output) }
@@ -58,7 +65,9 @@ public struct ChangedLines: Sendable {
         var currentFile: String?
         for line in diff.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix("+++ ") {
-                let path = line.dropFirst(4)
+                // git ends a path that contains a space with a tab.
+                var path = line.dropFirst(4)
+                if path.hasSuffix("\t") { path = path.dropLast() }
                 if path == "/dev/null" {
                     currentFile = nil
                 } else {
