@@ -29,7 +29,7 @@ As a result, only methods whose mutants all survived can stay `unknown`. In text
 | coverage data cannot be read or parsed | a message is logged and coverage is treated as unavailable |
 | a method has no matching function in the data | that method is treated as unknown (but see [Conditional compilation](#conditional-compilation)) |
 
-In all of these cases the executed column is unknown, and the verified methods run on every affected method. A method that no test executes then fails verification instead of being reported as `not-covered` (extreme mutation, for example, reports it as `pseudo-tested`). The report says whether coverage was available.
+In all of these cases the executed column is unknown, and the methods that fill the verified column run on every affected method. A method that no test executes then fails verification instead of being reported as `not-covered` (extreme mutation, for example, reports it as `pseudo-tested`). The report says whether coverage was available.
 
 ## Conditional compilation
 

@@ -185,6 +185,7 @@ The case mutants are a second round of `runMutants`, after the mutants of the wh
 - `Tests/Fixtures/SampleProject` is a small package in which every finding appears at least once. The integration test checks the finding for each method.
 - `Tests/Fixtures/ReferencedProject` covers the referenced column: calls through a protocol and a superclass, mock injection, a default implementation, `setUp()` in an XCTestCase, and a method executed only through another one.
 - `Tests/Fixtures/HangingProject` has a mutant that makes a loop endless. The integration test checks that it is reported as timed out, after the short timeout of the selected tests.
+- `Tests/Fixtures/OrderDependentProject` has a test scope that passes only after another test ran. The integration test checks that it is reported under *Tests that fail alone* and not selected.
 - `Tests/Fixtures/SwitchProject` has methods whose logic is a switch, each `tested` by the mutants of its whole body or not analysed at all. The integration test checks which cases `--case-mutants` reports.
 - `Tests/Fixtures/EdgeCases` collects constructs that must still compile after rewriting: `if`/`switch` expressions, result builders, `some View` outside a result builder, `throws`, actors, `defaultIsolation(MainActor)`, and more. Add a case here when changing the rewriter.
 
