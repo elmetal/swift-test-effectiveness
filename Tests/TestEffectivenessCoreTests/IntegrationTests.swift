@@ -240,6 +240,22 @@ struct IntegrationTests {
         #expect(!report.methods.contains { $0.method.name.hasSuffix(".neverCompiled()") })
         // `#if DEBUG` is active in a debug build and must still be analysed.
         #expect(report.methods.contains { $0.method.name.hasSuffix(".debugOnly()") })
+        #if canImport(SwiftUI)
+        // `some View` outside a result builder: the mutant renders nothing, and a `throw` mutant may follow it.
+        let classification = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0.classification) })
+        #expect(classification["Greeting.severalReturns(_:)"] == .tested)
+        #expect(classification["Greeting.badge(_:)"] == .tested)
+        #expect(classification["Greeting.explicitGetter"] == .tested)
+        #expect(classification["Tally.next()"] == .tested)
+        // A `var body` that returns explicitly is not a result builder body.
+        #expect(classification["Returning.body"] == .tested)
+        #expect(classification["Greeting.header"] == .pseudoTested)
+        #expect(classification["Greeting.plain()"] == .pseudoTested)
+        #expect(classification["Greeting.asyncThrowing()"] == .partiallyTested)
+        #expect(classification["Card.body(content:)"] == .notCovered)
+        let rethrowing = report.skipped.first { $0.method.name == "Greeting.rethrowing(_:)" }
+        #expect(rethrowing?.reason == "`some View` returned from a `rethrows` function")
+        #endif
     }
 }
 

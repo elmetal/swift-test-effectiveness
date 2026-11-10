@@ -38,13 +38,13 @@ public enum ExtremeMutation: Codable, Hashable, Sendable {
     case returnEmptyData
     /// Dictionary results: `return [:]`.
     case returnEmptyDictionary
-    /// `some View` result builder bodies: `EmptyView()`.
+    /// `some View` results: `EmptyView()`.
     case emptyView
     /// Throwing methods (opt-in): `throw <error>`.
     case throwError
 
-    /// Swift statement executed in place of the original body (except `emptyView`,
-    /// which is spliced as an `if`/`else` inside the result builder).
+    /// Swift statement executed in place of the original body (except `emptyView`, which is the
+    /// other branch of the original body: see `SchemataRewriter`).
     var replacementStatement: String {
         switch self {
         case .emptyBody: "return"

@@ -46,7 +46,7 @@
 | `[T]` / `Array` / `Set` / `ContiguousArray` | `return []` |
 | `[K: V]` / `Dictionary` | `return [:]` |
 | `Data` | `return Data()` |
-| result builder 内の `some View`（`var body`、`@ViewBuilder`） | `EmptyView()` |
+| `some View`（`var body`、`@ViewBuilder`、result builder のない関数や getter） | `EmptyView()` |
 | 型指定なしの `throws`（`--throw-mutants` 指定時のみ） | 上記に加えて `throw` |
 | `async` | 変更なし（上記の規則をそのまま適用） |
 
@@ -62,9 +62,9 @@
 | `@inlinable` / `@_transparent` / `@_alwaysEmitIntoClient` | 本体からミュータントのスイッチを参照できない（[詳細](../../../ARCHITECTURE.ja.md#mutant-schemata)） |
 | `main.swift` 内の宣言 | トップレベルコードの初期化順の制約 |
 | 本体がログ出力だけの `Void` メソッド（`--no-arid` 指定時を除く） | ログメッセージをアサートすべきテストはない（[arid な本体](#arid-な本体)） |
-| result builder 外で `some View` を返すメソッド | opaque 型は分岐ごとに同じ具象型が必要なため |
+| `rethrows` の関数が返す `some View` | 元の本体を入れるローカル関数を `rethrows` にできない（[詳細](../../../ARCHITECTURE.ja.md#mutant-schemata)） |
 | `View` 以外の result builder | builder がどの構文をサポートするか分からない |
-| タプル、`Result`、ジェネリック型パラメータ、ユーザー定義型など | 汎用的なデフォルト値がない |
+| タプル、`Result`、ジェネリック型パラメータ、ユーザー定義型、`some View` 以外の opaque 型など | 汎用的なデフォルト値がない |
 
 対象外のメソッドは黙って捨てず、レポートの *Not analyzed* に理由付きで列挙します。
 

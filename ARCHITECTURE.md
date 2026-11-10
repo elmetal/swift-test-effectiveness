@@ -115,20 +115,26 @@ func add(_ a: Int, _ b: Int) -> Int { switch __steActiveMutant { case 1: return 
 var body: some View { if __steMutantIs(7) { EmptyView() } else {
     Text("Hello")
 } }
+
+// `some View` outside a result builder
+func badge() -> some View { func __steOriginal() -> some View {
+    return Circle().frame(width: 8)
+}; return __steMutantIs(8) ? ViewBuilder.buildEither(first: EmptyView()) : ViewBuilder.buildEither(second: __steOriginal()) }
 ```
 
 Invariants the rewriter must keep:
 
 - **Line numbers match the original source.** All insertions are made within existing lines. Coverage (llvm-cov function regions start at the body's `{`) therefore maps directly onto the original declarations, and compiler diagnostics point at the same lines as the original. Insertions only ever shift columns to the right, which `CoverageMap.wasExecuted` relies on when several functions start on one line. Any other layer that rewrites the copy must keep this invariant too.
 - **Single-expression bodies get an explicit `return`.** The same applies to `if`/`switch` expressions, unless they contain `return` statements, in which case they are statements.
+- **An opaque result keeps its body in a local function.** Every `return` of a method returning `some View` must have the same concrete type, so a mutant cannot return in front of the original body. The body moves into the local function `__steOriginal`, where its `return`s are on their own, and the method returns once: `buildEither` is what an `if`/`else` in a view builder becomes, so the type is the one the result builder schema gives. The local function repeats the method's `async` and `throws`. It is a `@ViewBuilder` when the body has no `return`: a requirement such as `ViewModifier.body(content:)` makes the body a view builder without the attribute being written, an explicit `return` turns that off, and a body without one is valid as a builder either way. For the same reason a `var body` or a `@ViewBuilder` body that returns explicitly gets this schema and not the `if`/`else` one, which only compiles inside a builder.
 - **The switch is per file.** `__steActiveMutant` is generated at the end of each file as a `nonisolated fileprivate let` read with `getenv`. No build settings or project files need changing, and it works in modules using `defaultIsolation(MainActor.self)`.
-- **The switch also records.** With `STE_REACHED=<file>` in the environment, no mutant is active and the switch has the value `-2`: the `case -2` of each method (`__steMutantIs` in a result builder) calls `__steReached` with the id of the method's first mutant, which appends the id as a line to the file the first time the method runs. A per-file byte per mutant id remembers what was written; the write is one `write(2)` to a descriptor opened with `O_APPEND`, so the processes and threads of a run can share the file and a crash loses nothing. Without `STE_REACHED` the extra case costs nothing.
+- **The switch also records.** With `STE_REACHED=<file>` in the environment, no mutant is active and the switch has the value `-2`: the `case -2` of each method (`__steMutantIs` for `some View`) calls `__steReached` with the id of the method's first mutant, which appends the id as a line to the file the first time the method runs. A per-file byte per mutant id remembers what was written; the write is one `write(2)` to a descriptor opened with `O_APPEND`, so the processes and threads of a run can share the file and a crash loses nothing. Without `STE_REACHED` the extra case costs nothing.
 
 Consequences for which declarations can be mutated (see [Not targeted](docs/methods/extreme-mutation.md#not-targeted)):
 
 - `@inlinable`, `@_transparent` and `@_alwaysEmitIntoClient` bodies cannot reference a `fileprivate` declaration.
 - In `main.swift`, top-level code runs in order, so a method could run before the switch is initialised.
-- `some View` outside a result builder would need the same concrete type on both branches of the inserted check.
+- `some View` returned from a `rethrows` function: a local function has no throwing parameter of its own, so it cannot be `rethrows`.
 
 In custom mode, the active mutant is exported as both `STE_MUTANT` and `TEST_RUNNER_STE_MUTANT`, because `xcodebuild test` forwards `TEST_RUNNER_`-prefixed variables to the test process. `STE_REACHED` is exported the same way.
 
@@ -138,7 +144,7 @@ In custom mode, the active mutant is exported as both `STE_MUTANT` and `TEST_RUN
 - `Tests/Fixtures/SampleProject` is a small package in which every finding appears at least once. The integration test checks the finding for each method.
 - `Tests/Fixtures/ReferencedProject` covers the referenced column: calls through a protocol and a superclass, mock injection, a default implementation, `setUp()` in an XCTestCase, and a method executed only through another one.
 - `Tests/Fixtures/HangingProject` has a mutant that makes a loop endless. The integration test checks that it is reported as timed out, after the short timeout of the selected tests.
-- `Tests/Fixtures/EdgeCases` collects constructs that must still compile after rewriting: `if`/`switch` expressions, result builders, `throws`, actors, `defaultIsolation(MainActor)`, and more. Add a case here when changing the rewriter.
+- `Tests/Fixtures/EdgeCases` collects constructs that must still compile after rewriting: `if`/`switch` expressions, result builders, `some View` outside a result builder, `throws`, actors, `defaultIsolation(MainActor)`, and more. Add a case here when changing the rewriter.
 
 ## Adding a method
 

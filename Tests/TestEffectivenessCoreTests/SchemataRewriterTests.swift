@@ -53,6 +53,62 @@ struct SchemataRewriterTests {
         """)
     }
 
+    /// Every `return` of a method with an opaque result must have one type, so the original body
+    /// moves into a local function and the method returns once.
+    @Test func someViewOutsideAResultBuilderMovesTheBodyIntoALocalFunction() {
+        let output = rewrite("""
+        func label(_ done: Bool) -> some View {
+            guard done else { return Text("todo") }
+            return Text("done")
+        }
+        """)
+        #expect(output == """
+        func label(_ done: Bool) -> some View { func __steOriginal() -> some View {
+            guard done else { return Text("todo") }
+            return Text("done")
+         }; return __steMutantIs(1) ? ViewBuilder.buildEither(first: EmptyView()) : ViewBuilder.buildEither(second: __steOriginal()) }
+
+        """)
+    }
+
+    /// Without a `return` the body may be a view builder through a protocol requirement.
+    @Test func bodyWithoutReturnBecomesAViewBuilder() {
+        let output = rewrite("""
+        struct Card: ViewModifier {
+            func body(content: Content) -> some View {
+                content
+                Divider()
+            }
+            var title: some View { Text("a") }
+        }
+        """)
+        #expect(output == """
+        struct Card: ViewModifier {
+            func body(content: Content) -> some View { @ViewBuilder func __steOriginal() -> some View {
+                content
+                Divider()
+             }; return __steMutantIs(1) ? ViewBuilder.buildEither(first: EmptyView()) : ViewBuilder.buildEither(second: __steOriginal()) }
+            var title: some View { @ViewBuilder func __steOriginal() -> some View { Text("a")  }; return __steMutantIs(2) ? ViewBuilder.buildEither(first: EmptyView()) : ViewBuilder.buildEither(second: __steOriginal()) }
+        }
+
+        """)
+    }
+
+    @Test func localFunctionRepeatsEffectsAndThrowMutantComesFirst() {
+        let source = "func load() async throws -> some View { try await view() }"
+        let methods = MethodDiscovery.discover(
+            source: source, relativePath: "f.swift", options: DiscoveryOptions(includeThrowMutants: true)
+        )
+        let output = SchemataRewriter.rewrite(source: source, methods: [
+            (methods[0], [Mutant(id: 4, mutation: .emptyView), Mutant(id: 5, mutation: .throwError)]),
+        ])
+        #expect(output.hasPrefix(
+            "func load() async throws -> some View { @ViewBuilder func __steOriginal() async throws -> some View { try await view()  }; "
+                + "if __steActiveMutant == 5 { throw __STEExtremeMutationError() }; "
+                + "return try await __steMutantIs(4) ? ViewBuilder.buildEither(first: EmptyView()) : ViewBuilder.buildEither(second: __steOriginal()) }\n"
+        ))
+    }
+
     @Test func preservesLineNumbers() {
         let source = """
         struct S {
@@ -63,6 +119,9 @@ struct SchemataRewriterTests {
             }
             func c() -> Int? {
                 nil
+            }
+            func d() -> some View {
+                Text("d")
             }
         }
         """
