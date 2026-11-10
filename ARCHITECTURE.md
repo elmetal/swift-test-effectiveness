@@ -59,7 +59,7 @@ In custom mode, the baseline's test command writes the profile (`xcodebuild -ena
 
 ### Extreme mutation
 
-Each mutant run executes the tests with `STE_MUTANT=<id>` in the environment: for a Swift package the test bundles, started directly (see [Direct launch](#direct-launch)), or `swift test --skip-build`; otherwise the custom test command. The timeout is the baseline duration × `--timeout-factor`, with `--minimum-timeout` seconds as the minimum. Mutant runs write their profile data elsewhere, so they do not overwrite the baseline coverage.
+Each mutant run executes the tests with `STE_MUTANT=<id>` in the environment: for a Swift package the test bundles, started directly (see [Direct launch](#direct-launch)), or `swift test --skip-build`; otherwise the custom test command. A run is stopped after a timeout (`RunTimeout.swift`) that follows what it is expected to take: the baseline duration for the whole suite, and for selected scopes the sum of the durations `scopesFailingAlone` measured when each ran alone (never more than the whole suite gets), each × `--timeout-factor` and at least `--minimum-timeout` seconds. Without the option the minimum is 30 seconds, or 5 when the test bundles are started directly: only there is the fixed cost of a run small and a failing run as quick as a passing one. Mutant runs write their profile data elsewhere, so they do not overwrite the baseline coverage.
 
 #### Direct launch
 
@@ -137,6 +137,7 @@ In custom mode, the active mutant is exported as both `STE_MUTANT` and `TEST_RUN
 - Unit tests cover discovery, mutation operators, the rewriter, classification and reporting.
 - `Tests/Fixtures/SampleProject` is a small package in which every finding appears at least once. The integration test checks the finding for each method.
 - `Tests/Fixtures/ReferencedProject` covers the referenced column: calls through a protocol and a superclass, mock injection, a default implementation, `setUp()` in an XCTestCase, and a method executed only through another one.
+- `Tests/Fixtures/HangingProject` has a mutant that makes a loop endless. The integration test checks that it is reported as timed out, after the short timeout of the selected tests.
 - `Tests/Fixtures/EdgeCases` collects constructs that must still compile after rewriting: `if`/`switch` expressions, result builders, `throws`, actors, `defaultIsolation(MainActor)`, and more. Add a case here when changing the rewriter.
 
 ## Adding a method

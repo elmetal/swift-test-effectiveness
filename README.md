@@ -109,7 +109,7 @@ Options for a specific method:
 | `--arid-call <name>` | extreme mutation | Also treat calls to this function as logging, e.g. `track` or `Analytics.shared.track` (repeatable) |
 | `--jobs <n>` | extreme mutation | Run this many test runs at once (see [Parallel runs](#parallel-runs)) |
 | `--no-direct-launch` | extreme mutation | Swift packages: run every test run through `swift test` instead of [starting the test bundles directly](#starting-swift-package-tests-directly) |
-| `--timeout-factor`, `--minimum-timeout` | extreme mutation | Timeout for each mutant's test run (baseline duration × factor, with a minimum in seconds) |
+| `--timeout-factor`, `--minimum-timeout` | extreme mutation | [Timeout](#timeouts) of each test run: what the run is expected to take × factor (default 3), with a minimum in seconds (default 30, or 5 when the test bundles of a Swift package are started directly) |
 | `--no-test-selection` | extreme mutation | Run the whole test suite for every mutant instead of [the tests that execute its method](#test-selection) |
 | `--rerun-survivors` | extreme mutation | Run a mutant that survives [the tests that execute its method](#test-selection) against the whole suite as well |
 
@@ -185,7 +185,18 @@ swift-test-effectiveness /path/to/App \
   …
 ```
 
-The baseline and the check that every selectable test can be selected run alone, as worker 1; running each test scope alone uses all workers. Result bundles go to `<work dir>/results`; only the baseline's is kept. Timeouts still use the baseline duration, which was measured without other runs; on a loaded machine raise `--timeout-factor`.
+The baseline and the check that every selectable test can be selected run alone, as worker 1; running each test scope alone uses all workers. Result bundles go to `<work dir>/results`; only the baseline's is kept. [Timeouts](#timeouts) use durations that were measured with fewer runs at once (the baseline ran alone); on a loaded machine raise `--timeout-factor`.
+
+### Timeouts
+
+A mutant can turn a loop into an endless one. Its test run is stopped after a timeout, and the mutant counts as detected. The timeout follows what the run is expected to take:
+
+- A run of the whole suite gets the baseline's duration × `--timeout-factor`.
+- A run of selected test scopes gets the time they took when each ran alone × `--timeout-factor`, and never more than the whole suite gets. That is usually far less than the baseline, so on a large suite an endless loop costs seconds instead of minutes.
+
+Either is at least `--minimum-timeout` seconds. The default minimum is 30. When the test bundles of a Swift package are started directly it is 5, because such a run has almost no fixed cost and fails as quickly as it passes. A failing `xcodebuild` run can take much longer than a passing one (see `-collect-test-diagnostics` above), so custom mode keeps 30.
+
+A timeout that is too short makes a mutant that would survive look detected. On a loaded machine, or with many `--jobs`, raise `--timeout-factor` or `--minimum-timeout`.
 
 ### In CI
 
