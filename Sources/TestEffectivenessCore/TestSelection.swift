@@ -55,6 +55,6 @@ enum TestSelection {
     }
 
     static func shellQuoted(_ argument: String) -> String {
-        "'" + argument.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        ProcessRunner.shellQuote(argument)
     }
 }

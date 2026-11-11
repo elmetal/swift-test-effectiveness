@@ -43,7 +43,7 @@ public enum SchemataRewriter {
     /// The value of the switch while recording; never a mutant id.
     static let recordingValue = -2
 
-    public struct Insertion: Equatable {
+    struct Insertion: Equatable {
         var offset: Int
         var text: String
     }
