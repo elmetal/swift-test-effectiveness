@@ -140,6 +140,54 @@ struct GitDiffTests {
         #expect(changed.intersects(file: repo.appendingPathComponent("Sources/New.swift").path, lines: 1...1))
         #expect(!changed.intersects(file: repo.appendingPathComponent("Sources/Old.swift").path, lines: 1...1))
     }
+
+    @Test func pathWithASpaceEndsWithATab() {
+        let diff = """
+        --- a/My App/A.swift\t
+        +++ b/My App/A.swift\t
+        @@ -1 +1 @@
+        -old
+        +new
+        """
+        let changed = ChangedLines.parse(diff: diff, root: URL(fileURLWithPath: "/repo"))
+        #expect(changed.intersects(file: "/repo/My App/A.swift", lines: 1...1))
+    }
+
+    /// Spaces and non-ASCII characters in a path, and a git configuration that writes paths in
+    /// another way, must not hide a change.
+    @Test func pathsDoNotDependOnTheirCharactersOrTheGitConfiguration() throws {
+        let fileManager = FileManager.default
+        let repo = fileManager.temporaryDirectory.appendingPathComponent("ste-git-\(UUID().uuidString)")
+        try fileManager.createDirectory(at: repo.appendingPathComponent("My App"), withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: repo) }
+        func git(_ arguments: String...) throws {
+            let result = try ProcessRunner.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"] + arguments, in: repo
+            )
+            #expect(result.exitCode == 0, "\(result.output)")
+        }
+        let tracked = ["My App/A.swift", "My App/日本語.swift"]
+        try git("init", "-q")
+        for path in tracked {
+            try "func a() {}\n".write(to: repo.appendingPathComponent(path), atomically: true, encoding: .utf8)
+        }
+        try "func a() {}\n".write(to: repo.appendingPathComponent("My App/Same.swift"), atomically: true, encoding: .utf8)
+        try git("add", ".")
+        try git("commit", "-q", "-m", "init")
+        for setting in ["diff.mnemonicPrefix", "diff.noprefix", "diff.relative"] {
+            try git("config", setting, "true")
+        }
+        for path in tracked {
+            try "func b() {}\n".write(to: repo.appendingPathComponent(path), atomically: true, encoding: .utf8)
+        }
+        try "func c() {}\n".write(to: repo.appendingPathComponent("My App/新規.swift"), atomically: true, encoding: .utf8)
+
+        let changed = try ChangedLines.load(since: "HEAD", in: repo.appendingPathComponent("My App"))
+        for path in tracked + ["My App/新規.swift"] {
+            #expect(changed.intersects(file: repo.appendingPathComponent(path).path, lines: 1...1), "\(path)")
+        }
+        #expect(!changed.intersects(file: repo.appendingPathComponent("My App/Same.swift").path, lines: 1...1))
+    }
 }
 
 struct ReporterTests {
