@@ -196,6 +196,7 @@ case のミュータントは、本体全体のミュータントの後に、`ru
 - `Tests/Fixtures/SampleProject` は各指摘が 1 つ以上現れる小さなパッケージ。統合テストで各メソッドの指摘を検証する。
 - `Tests/Fixtures/ReferencedProject` は referenced 列のためのパッケージ。protocol やスーパークラス経由の呼び出し、モックの注入、デフォルト実装、XCTestCase の `setUp()`、別のメソッド経由でしか実行されないメソッドを含む。
 - `Tests/Fixtures/HangingProject` は、ループが終わらなくなるミュータントを持つパッケージ。統合テストで、選んだテストの短いタイムアウトのあとにタイムアウトとして報告されることを確認する。
+- `Tests/Fixtures/OrderDependentProject` は、ほかのテストが先に流れたときだけ通るテストスコープを持つパッケージ。統合テストで、それが *Tests that fail alone* として報告され、テスト選択に使われないことを確認する。
 - `Tests/Fixtures/SwitchProject` は、ロジックが switch になっているメソッドを集めたパッケージ。どれも本体全体のミュータントでは `tested` になるか、解析対象外になる。統合テストで、`--case-mutants` がどの case を報告するかを検証する。
 - `Tests/Fixtures/EdgeCases` は、if/switch 式、result builder、result builder 外の `some View`、`throws`、actor、`defaultIsolation(MainActor)` など、書き換え後もコンパイルできなければならない構文の集まり。書き換え処理を変更するときはここにケースを足す。
 

@@ -43,7 +43,7 @@ As in PIT/Descartes, a mutant that times out counts as detected.
 | `Bool` | `return true` and `return false` (both, as in Descartes) |
 | integer and floating-point types (`Int`, `UInt8`, `Double`, `CGFloat`, `Decimal`, …) | `return 0` and `return 1` |
 | `String` / `Substring` | `return ""` and `return "A"` |
-| `[T]` / `Array` / `Set` / `ContiguousArray` | `return []` |
+| `[T]` / `Array` / `Set` / `ContiguousArray` / `ArraySlice` | `return []` |
 | `[K: V]` / `Dictionary` | `return [:]` |
 | `Data` | `return Data()` |
 | `some View` (`var body`, `@ViewBuilder`, or a function or getter without a result builder) | `EmptyView()` |

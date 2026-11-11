@@ -8,7 +8,7 @@ import SwiftSyntax
 /// - `Bool` → `true` and `false` (both, as in Descartes)
 /// - numeric types → `0` and `1`
 /// - `String` / `Substring` → `""` and `"A"`
-/// - `[T]`, `Array`, `Set`, `ContiguousArray` → `[]`; `Data` → `Data()`
+/// - `[T]`, `Array`, `Set`, `ContiguousArray`, `ArraySlice` → `[]`; `Data` → `Data()`
 /// - `[K: V]`, `Dictionary` → `[:]`
 /// - `some View` → `EmptyView()`, inside a result builder or not
 /// - `Never` and anything else → not analyzed (reported with a reason)

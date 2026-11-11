@@ -94,6 +94,8 @@ The project is copied to `<package>/.build/test-effectiveness` and analysed ther
 | `--format text\|markdown\|json` | Report format (markdown is meant for PR comments; JSON is described below) |
 | `-o, --output <file>` | Write the report to a file |
 | `--fail-on-pseudo-tested` | Exit with status 1 if any method is pseudo-tested |
+| `--work-dir <dir>` | Directory for the copy of the project and the logs (default: `<project>/.build/test-effectiveness`) |
+| `-q, --quiet` | Do not print progress to standard error |
 
 Options for a specific method:
 

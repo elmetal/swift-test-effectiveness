@@ -43,7 +43,7 @@
 | `Bool` | `return true` と `return false`（Descartes と同じく両方） |
 | 整数・浮動小数点型（`Int`, `UInt8`, `Double`, `CGFloat`, `Decimal` …） | `return 0` と `return 1` |
 | `String` / `Substring` | `return ""` と `return "A"` |
-| `[T]` / `Array` / `Set` / `ContiguousArray` | `return []` |
+| `[T]` / `Array` / `Set` / `ContiguousArray` / `ArraySlice` | `return []` |
 | `[K: V]` / `Dictionary` | `return [:]` |
 | `Data` | `return Data()` |
 | `some View`（`var body`、`@ViewBuilder`、result builder のない関数や getter） | `EmptyView()` |
