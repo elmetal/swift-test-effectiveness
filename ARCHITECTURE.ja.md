@@ -76,7 +76,7 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 
 `DirectTestLauncher.swift`。`swift test --skip-build` は、テストを始める前にパッケージを読み込んでビルドを計画するので 1 回あたり約 1 秒かかり、`.build` もロックします。そこでベースラインより後の実行では、`swift test` が最後にしていることだけを行います。ビルドの bin パスにあるテストバンドル（テストターゲットごとの `<target>.xctest`。古いビルドシステムでは `<Package>PackageTests.xctest`）ごとに、XCTest 用に `xctest <bundle>` を、Swift Testing 用に `swiftpm-testing-helper --test-bundle-path <binary> … --testing-library swift-testing` を起動します。
 
-- プロセスには、プラットフォームの `XCTest.framework` と `Testing.framework` を読み込めるよう `DYLD_FRAMEWORK_PATH` と `DYLD_LIBRARY_PATH` を渡します。`/bin/sh` は保護されたバイナリで `DYLD_*` を落とすので、`ProcessRunner` はこれらのコマンドをシェルを通さずに起動します（`withoutShell`、`posix_spawn_file_actions_addchdir_np`）。
+- プロセスには、プラットフォームの `XCTest.framework` と `Testing.framework` を読み込めるよう `DYLD_FRAMEWORK_PATH` と `DYLD_LIBRARY_PATH` を渡します。`/bin/sh` は保護されたバイナリで `DYLD_*` を落とすので、`ProcessRunner` はこれらのコマンドをシェルを通さずに起動します（`withoutShell`、`posix_spawn_file_actions_addchdir`）。
 - `xctest` には `SWIFT_TESTING_ENABLED=0` を渡します。渡さないと、バンドルの Swift Testing のテストも実行します。
 - テスト選択は、型のセレクタを `-XCTest <Module>.<Type>,…` に、Swift Testing 用には `--filter` に変換し、選ばれたモジュールのバンドルだけを起動します。Swift Testing は一致するテストがないと 69 で終了しますが、これは失敗として扱いません。
 - 1 回の実行は、最初に失敗したプロセスで打ち切ります。タイムアウトは、その実行のプロセスすべての合計に対するものです。
