@@ -77,6 +77,7 @@ public enum ProcessRunner {
     private static func parkForTermination() -> Never {
         while true { pause() }
     }
+
     /// - Parameter withoutShell: start `arguments[0]` (an absolute path) itself instead of going
     ///   through `/bin/sh`. On macOS, `/bin/sh` is a protected binary and drops `DYLD_*` variables
     ///   from the environment, so a command that needs them must start this way. Only on Darwin;

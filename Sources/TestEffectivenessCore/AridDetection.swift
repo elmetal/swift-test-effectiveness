@@ -139,7 +139,7 @@ public struct AridDetector: Sendable {
         text.hasPrefix("self.") ? String(text.dropFirst(5)) : text
     }
 
-    /// Finds function calls, ignoring nested closures.
+    /// Finds function calls and macro expansions, also inside closures.
     private final class CallFinder: SyntaxVisitor {
         var found = false
 

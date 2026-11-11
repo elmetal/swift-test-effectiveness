@@ -26,9 +26,9 @@ public enum MutationOperators {
         "Double", "Float", "Float16", "Float80", "CGFloat", "Decimal", "TimeInterval",
     ]
     static let stringTypes: Set<String> = ["String", "Substring"]
+    static let arrayLikeTypes: Set<String> = ["Array", "Set", "ContiguousArray", "ArraySlice"]
     /// How the reason starts when the return type has no simplest value.
     static let unsupportedReturnType = "unsupported return type"
-    static let arrayLikeTypes: Set<String> = ["Array", "Set", "ContiguousArray", "ArraySlice"]
 
     /// - Parameters:
     ///   - returnType: the declared return type, or `nil` when there is no return clause.
