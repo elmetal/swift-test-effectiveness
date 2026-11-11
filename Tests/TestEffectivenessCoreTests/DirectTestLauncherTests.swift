@@ -116,6 +116,16 @@ struct ProcessRunnerTests {
         #expect(lines == [ReferenceColumn.realPath(directory.path), "from the environment"])
     }
 
+    /// A byte that is not UTF-8 (a command killed in the middle of a character) must not cost
+    /// the rest of the output.
+    @Test func keepsOutputThatIsNotUTF8() throws {
+        let result = try ProcessRunner.run(
+            ["/usr/bin/printf", "error: broken\\n\\377"], in: FileManager.default.temporaryDirectory
+        )
+        #expect(result.exitCode == 0)
+        #expect(result.output.hasPrefix("error: broken\n"))
+    }
+
     @Test func withoutShellStillTimesOut() throws {
         let result = try ProcessRunner.run(
             ["/bin/sleep", "30"], in: FileManager.default.temporaryDirectory, timeout: 0.2, withoutShell: true

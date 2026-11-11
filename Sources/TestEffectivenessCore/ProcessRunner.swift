@@ -172,7 +172,9 @@ public enum ProcessRunner {
         }
         // The command ended because of the signal; its result must not be read as a test outcome.
         if terminating { parkForTermination() }
-        let output = (try? String(contentsOf: outputURL, encoding: .utf8)) ?? ""
+        // Not `String(contentsOf:encoding:)`, which gives nothing at all when a byte is not UTF-8:
+        // a command that is killed can stop in the middle of a character.
+        let output = String(decoding: (try? Data(contentsOf: outputURL)) ?? Data(), as: UTF8.self)
         return ProcessResult(
             exitCode: timedOut ? -1 : decodeExitStatus(exitStatus),
             timedOut: timedOut,
