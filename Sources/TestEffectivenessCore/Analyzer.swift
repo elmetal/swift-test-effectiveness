@@ -788,8 +788,13 @@ public final class Analyzer: @unchecked Sendable {
                 dropped.append(module)
             }
         }
-        log("Test selection: selecting tests of \(dropped.joined(separator: ", ")) fails without mutations "
-            + "(see selection-check-*.log); mutants reached only by them run the whole suite.")
+        if dropped.isEmpty {
+            log("Test selection: selecting every test scope at once fails without mutations, but the scopes "
+                + "of each module can be selected (see selection-check*.log).")
+        } else {
+            log("Test selection: selecting tests of \(dropped.joined(separator: ", ")) fails without mutations "
+                + "(see selection-check-*.log); mutants reached only by them run the whole suite.")
+        }
         return selectable.isEmpty ? nil : selectable
     }
 
