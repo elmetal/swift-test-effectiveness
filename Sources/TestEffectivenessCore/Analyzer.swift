@@ -381,7 +381,9 @@ public final class Analyzer: @unchecked Sendable {
         case .custom(let directories, _, _):
             files = directories.flatMap { swiftFiles(under: $0) }
         }
-        return files
+        // A set: `--source-dir` directories may contain each other, and a file listed twice would
+        // get its mutants twice.
+        return Set(files)
             .filter { path in !configuration.excludePathSubstrings.contains { path.contains($0) } }
             .sorted()
     }
