@@ -176,8 +176,14 @@ struct SwiftTestEffectiveness: ParsableCommand {
             if failOnPseudoTested && !report.methods(.pseudoTested).isEmpty {
                 throw ExitCode(1)
             }
-        } catch let error as AnalysisError {
-            FileHandle.standardError.write(Data("error: \(error)\n".utf8))
+        } catch let exit as ExitCode {
+            throw exit
+        } catch {
+            // Every failure is status 2: ArgumentParser would exit with 1 for an error it does
+            // not know, which is the status of `--fail-on-pseudo-tested`.
+            let message = error is AnalysisError || error is ProcessRunnerError
+                ? "\(error)" : error.localizedDescription
+            FileHandle.standardError.write(Data("error: \(message)\n".utf8))
             throw ExitCode(2)
         }
     }
