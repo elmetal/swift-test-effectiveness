@@ -20,6 +20,22 @@ struct DirectTestLauncherTests {
         )
     }
 
+    /// The launcher that was compared with `swift test` is the one with the same tools, bundles
+    /// and environment; which passes ran no test is found again by every run.
+    @Test func identityFollowsWhatDecidesTheProcessesToStart() {
+        let base = launcher([app, core])
+        #expect(launcher([app, core]).identity == base.identity)
+        #expect(launcher([app, core], emptyPasses: [Pass(bundle: app, library: .xctest)]).identity == base.identity)
+        #expect(launcher([app]).identity != base.identity)
+        #expect(launcher([combined]).identity != base.identity)
+        var other = base
+        other.xctest = "/other/xctest"
+        #expect(other.identity != base.identity)
+        other = base
+        other.environment["DYLD_FRAMEWORK_PATH"] = "/Platforms/Frameworks"
+        #expect(other.identity != base.identity)
+    }
+
     @Test func wholeSuiteRunsBothLibrariesOfEveryBundle() {
         let commands = launcher([app, core]).commands(for: nil)
         #expect(commands.map(\.arguments) == [

@@ -38,6 +38,8 @@ public struct AnalysisConfiguration: Sendable {
     public var projectPath: URL
     public var workDirectory: URL
     public var buildSystem: BuildSystem
+    /// Find out which methods the baseline executes, and run no mutant of the others. SwiftPM:
+    /// the mutant schema records them. Custom mode: from the coverage profile the baseline writes.
     public var useCoverage: Bool
     /// Fill the referenced column from the compiler's index.
     public var useIndex: Bool
@@ -114,6 +116,24 @@ public struct AnalysisConfiguration: Sendable {
     }
 }
 
+/// What says which methods the baseline executed.
+enum ExecutedMethods {
+    /// Custom mode: the functions of the coverage profile the baseline wrote.
+    case coverage(CoverageMap)
+    /// SwiftPM: what the mutant schema recorded during the baseline (see `ReachedMethods`).
+    case recorded(Set<Int>)
+
+    /// Whether the run that recorded `ids` executed a method.
+    ///
+    /// A method records with its first mutant. One without mutants of its own records only
+    /// through its cases; when none of them ran, the method may still have, as it can return
+    /// before its switch or take a case without mutants: `nil`.
+    static func wasRecorded(_ ids: Set<Int>, mutants: [Mutant], cases: [[Mutant]]) -> Bool? {
+        if let first = mutants.first { return ids.contains(first.id) }
+        return cases.contains { $0.first.map { ids.contains($0.id) } ?? false } ? true : nil
+    }
+}
+
 /// Runs the whole pipeline: discover → build schema once → baseline → one test run per mutant →
 /// classify each method.
 public final class Analyzer: @unchecked Sendable {
@@ -127,6 +147,17 @@ public final class Analyzer: @unchecked Sendable {
     private var directLauncher: DirectTestLauncher?
     /// SwiftPM: the answer of `swift build --show-bin-path`, which takes about a second to ask.
     private var knownBinPath: URL?
+    /// `knownBinPath` is what an earlier run was told, not this one.
+    private var binPathIsCached = false
+    /// SwiftPM: what earlier runs in the work directory found out (see `RunCache`).
+    private var cache = RunCache()
+    private var cacheIsLoaded = false
+    /// By `swift` executable; asking takes a fraction of a second.
+    private var toolchains: [String: Toolchain?] = [:]
+    /// SwiftPM: the launcher of the test bundles the build wrote, once it was looked for.
+    private var launcherResolution: Result<DirectTestLauncher, DirectTestLauncher.Unavailable>?
+    /// SwiftPM: updating the copy changed nothing in it, and it was built before.
+    private var copyIsAsBuilt = false
 
     public init(configuration: AnalysisConfiguration, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.configuration = configuration
@@ -134,6 +165,7 @@ public final class Analyzer: @unchecked Sendable {
     }
 
     private var copyRoot: URL { configuration.workDirectory.appendingPathComponent("project") }
+    private var cacheFile: URL { configuration.workDirectory.appendingPathComponent("cache.json") }
     private var logDirectory: URL { configuration.workDirectory.appendingPathComponent("logs") }
     /// The files the test runs without mutations record the methods they execute in.
     private var reachedDirectory: URL { configuration.workDirectory.appendingPathComponent("reached") }
@@ -203,7 +235,7 @@ public final class Analyzer: @unchecked Sendable {
         try prepareWorkspace(assignments, cases: caseAssignments)
         try build()
         let references = loadReferences(methods.map(\.info))
-        let (baselineDuration, coverage, baselineOutput) = try runBaseline()
+        let (baselineDuration, executed, baselineOutput) = try runBaseline()
         log(String(format: "Baseline passed in %.1fs.", baselineDuration))
         var runTimeout = RunTimeout(
             factor: configuration.timeoutFactor,
@@ -226,14 +258,27 @@ public final class Analyzer: @unchecked Sendable {
         // Decide up front which mutants run, so that progress can show the total.
         var planned: [(method: DiscoveredMethod, mutants: [Mutant], reached: Bool?, cases: [[Mutant]])] = []
         for ((method, mutants), cases) in zip(assignments, caseAssignments) {
-            let reached = coverage?.wasExecuted(
-                file: copyRoot.appendingPathComponent(method.info.file).path,
-                bodyStart: method.info.bodyStart
-            )
-            // llvm-cov lists every compiled function, executed or not. A method inside `#if` that is
-            // missing from the data was most likely compiled out; running its mutants would only
-            // report it as pseudo-tested.
-            if coverage != nil, reached == nil, method.isConditionallyCompiled {
+            let reached: Bool?
+            // A method inside `#if` that the build has nothing of was most likely compiled out;
+            // running its mutants would only report it as pseudo-tested.
+            let compiledOut: Bool
+            switch executed {
+            case .coverage(let coverage):
+                reached = coverage.wasExecuted(
+                    file: copyRoot.appendingPathComponent(method.info.file).path,
+                    bodyStart: method.info.bodyStart
+                )
+                // llvm-cov lists every compiled function, executed or not.
+                compiledOut = reached == nil
+            case .recorded(let ids):
+                reached = ExecutedMethods.wasRecorded(ids, mutants: mutants, cases: cases)
+                // The index has a definition for every compiled method.
+                compiledOut = reached != true && references?.status[method.info] == .unknown
+            case nil:
+                reached = nil
+                compiledOut = false
+            }
+            if compiledOut, method.isConditionallyCompiled {
                 skipped.append(SkippedMethod(method: method.info, reason: Self.notCompiledReason))
                 continue
             }
@@ -360,7 +405,7 @@ public final class Analyzer: @unchecked Sendable {
 
         return AnalysisReport(
             projectPath: configuration.projectPath.path,
-            coverageAvailable: coverage != nil,
+            coverageAvailable: executed != nil,
             referencesAvailable: references != nil,
             methods: results,
             skipped: skipped,
@@ -368,8 +413,7 @@ public final class Analyzer: @unchecked Sendable {
         )
     }
 
-    static let notCompiledReason =
-        "inside `#if` and missing from the coverage data (not compiled in this build configuration)"
+    static let notCompiledReason = "inside `#if` and not compiled in this build configuration"
 
     // MARK: - Sources
 
@@ -388,33 +432,56 @@ public final class Analyzer: @unchecked Sendable {
             .sorted()
     }
 
-    private func swiftPMSourceFiles(swift: String, onlyTargets: [String]) throws -> [String] {
-        let result = try ProcessRunner.run(
-            [swift, "package", "describe", "--type", "json"], in: configuration.projectPath
-        )
+    private struct PackageDescription: Decodable {
+        struct Target: Decodable {
+            var name: String
+            var path: String
+            var type: String
+            var sources: [String]?
+            var module_type: String?
+        }
+        var name: String
+        var targets: [Target]
+    }
+
+    /// What `swift package describe` prints, from the cache when the manifest, the toolchain, the
+    /// environment and the files in the targets' directories are those it was printed for.
+    private func packageDescription(swift: String) throws -> PackageDescription {
+        loadCache(swift: swift)
+        let package = configuration.projectPath
+        let inputs = toolchain(swift: swift).flatMap { PackageInputs.digest(package: package, toolchain: $0.fingerprint) }
+        if let inputs, let cached = cache.packageDescription, cached.inputs == inputs,
+           cached.listing == PackageInputs.listing(of: cached.targetDirectories, in: package),
+           let description = try? JSONDecoder().decode(PackageDescription.self, from: Data(cached.output.utf8)) {
+            return description
+        }
+        cache.packageDescription = nil
+
+        let result = try ProcessRunner.run([swift, "package", "describe", "--type", "json"], in: package)
         guard result.exitCode == 0 else { throw AnalysisError.packageDescription(result.output) }
         // Warnings may precede the JSON document.
-        guard let start = result.output.firstIndex(of: "{"),
-              let data = String(result.output[start...]).data(using: .utf8)
-        else { throw AnalysisError.packageDescription(result.output) }
-
-        struct Description: Decodable {
-            struct Target: Decodable {
-                var name: String
-                var path: String
-                var type: String
-                var sources: [String]?
-                var module_type: String?
-            }
-            var name: String
-            var targets: [Target]
+        guard let start = result.output.firstIndex(of: "{") else {
+            throw AnalysisError.packageDescription(result.output)
         }
-        let description: Description
+        let output = String(result.output[start...])
+        let description: PackageDescription
         do {
-            description = try JSONDecoder().decode(Description.self, from: data)
+            description = try JSONDecoder().decode(PackageDescription.self, from: Data(output.utf8))
         } catch {
             throw AnalysisError.packageDescription("\(error)\n\(result.output)")
         }
+        if let inputs {
+            let directories = description.targets.map(\.path)
+            cache.packageDescription = RunCache.PackageDescription(
+                inputs: inputs, targetDirectories: directories,
+                listing: PackageInputs.listing(of: directories, in: package), output: output
+            )
+        }
+        return description
+    }
+
+    private func swiftPMSourceFiles(swift: String, onlyTargets: [String]) throws -> [String] {
+        let description = try packageDescription(swift: swift)
         package = (description.name, description.targets.filter { $0.type == "test" }.map(\.name))
         return description.targets
             .filter { ["library", "executable"].contains($0.type) && $0.module_type == "SwiftTarget" }
@@ -458,6 +525,13 @@ public final class Analyzer: @unchecked Sendable {
                 ).utf8
             )
         }
+        // Until the copy is known not to have changed, nothing says that it is built: a run that
+        // stops while it updates the copy must not leave the next one a build to skip.
+        let builtWith = cache.builtWith
+        if case .swiftPM = configuration.buildSystem {
+            cache.builtWith = nil
+            cache.save(to: cacheFile)
+        }
         // In place: files that did not change keep their modification time, and what the last
         // build wrote into the copy stays, so the build only redoes what changed.
         let summary = try WorkspaceCopy.sync(
@@ -465,6 +539,10 @@ public final class Analyzer: @unchecked Sendable {
             manifest: configuration.workDirectory.appendingPathComponent("copied-files.json"),
             skipping: [configuration.workDirectory], contents: schemata
         )
+        if summary.written == 0, summary.removed == 0, builtWith != nil {
+            cache.builtWith = builtWith
+            copyIsAsBuilt = true
+        }
         log("Wrote mutant schema to \(copyRoot.path) (\(summary.written) files written, "
             + "\(summary.unchanged) unchanged, \(summary.removed) removed).")
     }
@@ -473,20 +551,59 @@ public final class Analyzer: @unchecked Sendable {
 
     private func build() throws {
         let logFile = logDirectory.appendingPathComponent("build.log")
-        log("Building mutant schema…")
         let result: ProcessResult
         switch configuration.buildSystem {
         case .swiftPM(let swift, _, _):
             var arguments = [swift, "build", "--build-tests"]
-            if configuration.useCoverage { arguments.append("--enable-code-coverage") }
             if configuration.useIndex { arguments.append("--enable-index-store") }
+            if buildIsUpToDate(arguments: arguments) {
+                log("Not building: nothing in the copy changed since it was built.")
+                cache.save(to: cacheFile)
+                return
+            }
+            log("Building mutant schema…")
             result = try ProcessRunner.run(arguments, in: copyRoot, logFile: logFile)
+            if result.exitCode == 0 {
+                cache.builtWith = arguments
+                cache.save(to: cacheFile)
+            }
         case .custom(_, let buildCommand, _):
+            log("Building mutant schema…")
             result = try ProcessRunner.runShell(buildCommand, in: copyRoot, logFile: logFile)
         }
         guard result.exitCode == 0 else {
             throw AnalysisError.buildFailed(log: logFile, tail: Self.tail(result.output))
         }
+    }
+
+    /// SwiftPM: whether `swift build` would have nothing to do, which still takes it seconds to
+    /// find out. The copy is as the last build left it, that build succeeded with the same
+    /// arguments and toolchain, its products are still there, and no dependency is a directory
+    /// outside the copy, which could have changed.
+    private func buildIsUpToDate(arguments: [String]) -> Bool {
+        guard copyIsAsBuilt, cache.builtWith == arguments, let binPath = cache.binPath,
+              FileManager.default.fileExists(atPath: binPath)
+        else { return false }
+        let workspaceState = copyRoot.appendingPathComponent(".build/workspace-state.json")
+        return !LocalDependencies.exist(workspaceState: try? Data(contentsOf: workspaceState))
+    }
+
+    // MARK: - Cache
+
+    /// SwiftPM: reads what earlier runs found out, and forgets what they found for another
+    /// toolchain.
+    private func loadCache(swift: String) {
+        guard !cacheIsLoaded else { return }
+        cacheIsLoaded = true
+        cache = RunCache.load(cacheFile)
+        cache.adopt(toolchain: toolchain(swift: swift)?.fingerprint)
+    }
+
+    private func toolchain(swift: String) -> Toolchain? {
+        if let known = toolchains[swift] { return known }
+        let toolchain = Toolchain.resolve(swift: swift)
+        toolchains[swift] = .some(toolchain)
+        return toolchain
     }
 
     // MARK: - References
@@ -506,11 +623,20 @@ public final class Analyzer: @unchecked Sendable {
             if let path = configuration.indexStorePath {
                 store = URL(fileURLWithPath: path, relativeTo: copyRoot).standardizedFileURL
             } else {
-                guard let binPath = binPath(swift: swift) else {
+                // Not where an earlier run was told the products are: ask again.
+                func found(_ binPath: URL?) -> URL? {
+                    guard let store = binPath?.appendingPathComponent("index/store"),
+                          FileManager.default.fileExists(atPath: store.path)
+                    else { return nil }
+                    return store
+                }
+                guard let found = found(binPath(swift: swift))
+                    ?? (binPathIsCached ? found(binPath(swift: swift, askAgain: true)) : nil)
+                else {
                     log("Could not locate the index store; the referenced column is unavailable.")
                     return nil
                 }
-                store = binPath.appendingPathComponent("index/store")
+                store = found
             }
         case .custom:
             guard let path = configuration.indexStorePath else {
@@ -522,7 +648,7 @@ public final class Analyzer: @unchecked Sendable {
             swift = "swift"
             store = URL(fileURLWithPath: path, relativeTo: copyRoot).standardizedFileURL
         }
-        guard let library = ReferenceColumn.libraryPath(swift: swift) else {
+        guard let library = toolchain(swift: swift)?.indexStoreLibrary else {
             log("libIndexStore not found next to `\(swift)`; the referenced column is unavailable.")
             return nil
         }
@@ -541,32 +667,61 @@ public final class Analyzer: @unchecked Sendable {
         }
     }
 
-    /// SwiftPM: where the build of the copy writes its products.
-    private func binPath(swift: String) -> URL? {
-        if let knownBinPath { return knownBinPath }
+    /// SwiftPM: where the build of the copy writes its products. What an earlier run was told
+    /// holds as long as the toolchain is the same and the directory exists.
+    ///
+    /// - Parameter askAgain: do not take an earlier run's word for it.
+    private func binPath(swift: String, askAgain: Bool = false) -> URL? {
+        if !askAgain {
+            if let knownBinPath { return knownBinPath }
+            if let cached = cache.binPath, FileManager.default.fileExists(atPath: cached) {
+                knownBinPath = URL(fileURLWithPath: cached)
+                binPathIsCached = true
+                return knownBinPath
+            }
+        }
+        binPathIsCached = false
         guard let result = try? ProcessRunner.run([swift, "build", "--show-bin-path"], in: copyRoot),
               result.exitCode == 0,
               let path = result.output.split(separator: "\n").last
         else { return nil }
         knownBinPath = URL(fileURLWithPath: path.trimmingCharacters(in: .whitespaces))
+        cache.binPath = knownBinPath?.path
+        cache.save(to: cacheFile)
         return knownBinPath
     }
 
     // MARK: - Baseline
 
-    private func runBaseline() throws -> (duration: Double, coverage: CoverageMap?, output: String) {
+    private func runBaseline() throws -> (duration: Double, executed: ExecutedMethods?, output: String) {
         let logFile = logDirectory.appendingPathComponent("baseline.log")
         log("Running baseline tests…")
         switch configuration.buildSystem {
         case .swiftPM(let swift, _, let filter):
-            var arguments = testArguments(swift: swift, filter: filter)
-            if configuration.useCoverage { arguments.append("--enable-code-coverage") }
-            let result = try ProcessRunner.run(arguments, in: copyRoot, logFile: logFile)
+            // The mutant schema records the methods the run executes.
+            let reachedFile = configuration.useCoverage ? reachedDirectory.appendingPathComponent("baseline.txt") : nil
+            var environment: [String: String] = [:]
+            if let reachedFile { environment[SchemataRewriter.reachedEnvironmentVariable] = reachedFile.path }
+            func recorded() -> ExecutedMethods? {
+                reachedFile.flatMap(ReachedMethods.read).map(ExecutedMethods.recorded)
+            }
+            // Empty rather than missing when the run executes no method with a mutant.
+            func startRecording() {
+                if let reachedFile { FileManager.default.createFile(atPath: reachedFile.path, contents: nil) }
+            }
+
+            startRecording()
+            if let result = try runBaselineDirectly(environment: environment, logFile: logFile) {
+                return (result.duration, recorded(), result.output)
+            }
+            startRecording()
+            let result = try ProcessRunner.run(
+                testArguments(swift: swift, filter: filter), in: copyRoot, environment: environment, logFile: logFile
+            )
             guard result.exitCode == 0 else {
                 throw AnalysisError.baselineFailed(log: logFile, tail: Self.tail(result.output))
             }
-            guard configuration.useCoverage else { return (result.duration, nil, result.output) }
-            return (result.duration, loadCoverage(swift: swift), result.output)
+            return (result.duration, recorded(), result.output)
         case .custom:
             // Coverage files are at least as new as the baseline; older ones are left over.
             let start = Date().addingTimeInterval(-1)
@@ -575,8 +730,33 @@ public final class Analyzer: @unchecked Sendable {
                 throw AnalysisError.baselineFailed(log: logFile, tail: Self.tail(result.output))
             }
             guard configuration.useCoverage else { return (result.duration, nil, result.output) }
-            return (result.duration, loadCustomCoverage(since: start), result.output)
+            return (result.duration, loadCustomCoverage(since: start).map(ExecutedMethods.coverage), result.output)
         }
+    }
+
+    /// SwiftPM: the baseline as a run of the test bundles started directly, which spares the
+    /// seconds `swift test` takes besides the tests. Only when an earlier run found this launcher
+    /// to run the tests that `swift test` runs (`setUpDirectLaunch`); a launcher that starts them
+    /// wrongly would pass a suite that fails, or fail one that passes.
+    ///
+    /// `nil` when that is not known, or when the run does not pass or runs no test. `swift test`
+    /// then runs the baseline and says what fails, and the launcher is compared with it again.
+    private func runBaselineDirectly(environment: [String: String], logFile: URL) throws -> ProcessResult? {
+        guard var launcher = try? launcher(), cache.verifiedLauncher == launcher.identity else { return nil }
+        let (result, executedTests) = try launcher.runWholeSuite(
+            environment: environment, timeout: nil, in: copyRoot, logFile: logFile
+        )
+        guard result.exitCode == 0, executedTests > 0 else {
+            cache.verifiedLauncher = nil
+            cache.save(to: cacheFile)
+            let kept = logDirectory.appendingPathComponent("baseline-direct.log")
+            try? FileManager.default.removeItem(at: kept)
+            try? FileManager.default.moveItem(at: logFile, to: kept)
+            log("The tests do not pass when started directly (see \(kept.path)); running them through `swift test`.")
+            return nil
+        }
+        directLauncher = launcher
+        return result
     }
 
     /// Custom mode: exports the coverage of each binary with `llvm-cov export` and merges it.
@@ -616,30 +796,17 @@ public final class Analyzer: @unchecked Sendable {
         return CoverageMap(merging: maps)
     }
 
-    private func loadCoverage(swift: String) -> CoverageMap? {
-        guard let pathResult = try? ProcessRunner.run(
-            [swift, "test", "--show-codecov-path"], in: copyRoot
-        ), pathResult.exitCode == 0,
-            let path = pathResult.output.split(separator: "\n").last.map(String.init),
-            let data = FileManager.default.contents(atPath: path.trimmingCharacters(in: .whitespaces))
-        else {
-            log("Coverage data unavailable; running every mutant.")
-            return nil
-        }
-        do {
-            return try CoverageMap(jsonData: data)
-        } catch {
-            log("Could not parse coverage data (\(error)); running every mutant.")
-            return nil
-        }
-    }
-
     // MARK: - Direct launch
 
     /// SwiftPM: from here on, start the test bundles directly if that gives the baseline's
     /// results. Otherwise every run goes through `swift test`, one at a time.
     private func setUpDirectLaunch(baselineOutput: String, timeout: Double) throws {
-        guard case .swiftPM(let swift, _, let filter) = configuration.buildSystem else { return }
+        guard case .swiftPM(_, _, let filter) = configuration.buildSystem else { return }
+        if directLauncher != nil {
+            log("Starting the test bundles directly, as for the baseline (an earlier run found them to run "
+                + "the tests of `swift test`).")
+            return
+        }
         let fallback = "using `swift test` for every run" + (configuration.jobs > 1 ? ", one at a time" : "")
         guard configuration.directLaunch else {
             if configuration.jobs > 1 { log("--jobs needs the tests to be started directly; \(fallback).") }
@@ -649,25 +816,49 @@ public final class Analyzer: @unchecked Sendable {
             if configuration.jobs > 1 { log("--jobs cannot be used with --test-filter; \(fallback).") }
             return
         }
-        guard let package, let binPath = binPath(swift: swift) else {
-            log("Could not locate the test bundles; \(fallback).")
-            return
-        }
         do {
-            var launcher = try DirectTestLauncher.resolve(
-                swift: swift, binPath: binPath, packageName: package.name, testTargets: package.testTargets,
-                in: copyRoot
-            )
+            var launcher = try launcher()
             if let problem = try launcher.verify(
                 baselineOutput: baselineOutput, timeout: timeout, in: copyRoot,
                 logFile: logDirectory.appendingPathComponent("direct-launch-check.log")
             ) { throw problem }
             directLauncher = launcher
+            // The next run in this work directory starts with it.
+            cache.verifiedLauncher = launcher.identity
+            cache.save(to: cacheFile)
             log("Starting the test bundles directly from here on (same tests as the baseline).")
         } catch {
             // Also a tool that cannot be started: never a reason to stop the analysis.
             log("Cannot start the tests directly: \(error); \(fallback).")
         }
+    }
+
+    /// SwiftPM: the launcher of the test bundles the build wrote. Looked for once.
+    private func launcher() throws(DirectTestLauncher.Unavailable) -> DirectTestLauncher {
+        if let launcherResolution { return try launcherResolution.get() }
+        let resolution = Result { () throws(DirectTestLauncher.Unavailable) -> DirectTestLauncher in
+            guard case .swiftPM(let swift, _, let filter) = configuration.buildSystem,
+                  configuration.directLaunch, filter == nil
+            else { throw DirectTestLauncher.Unavailable(description: "not asked for") }
+            guard let package, let toolchain = toolchain(swift: swift), let binPath = binPath(swift: swift) else {
+                throw DirectTestLauncher.Unavailable(description: "could not locate the test bundles")
+            }
+            func resolve(_ binPath: URL) throws(DirectTestLauncher.Unavailable) -> DirectTestLauncher {
+                try DirectTestLauncher.resolve(
+                    toolchain: toolchain, binPath: binPath, packageName: package.name,
+                    testTargets: package.testTargets, in: copyRoot
+                )
+            }
+            do throws(DirectTestLauncher.Unavailable) {
+                return try resolve(binPath)
+            } catch {
+                // Not where an earlier run was told the products are: ask again.
+                guard binPathIsCached, let binPath = self.binPath(swift: swift, askAgain: true) else { throw error }
+                return try resolve(binPath)
+            }
+        }
+        launcherResolution = resolution
+        return try resolution.get()
     }
 
     // MARK: - Test selection
@@ -770,6 +961,9 @@ public final class Analyzer: @unchecked Sendable {
     }
 
     private func selectableModules(_ all: Set<TestSelector>, timeout: Double) throws -> Set<TestSelector>? {
+        // Started directly, a selector that matches nothing runs no test instead of failing, and
+        // each scope runs alone next, which finds the ones that do not pass when selected.
+        if directLauncher != nil, all.count > 1 { return all }
         log("Checking that the \(all.count) test scopes can be selected…")
         let check = try executeTests(
             all.sorted(), mutant: nil, timeout: timeout,
@@ -1026,8 +1220,6 @@ public final class Analyzer: @unchecked Sendable {
                     tests: tests, environment: environment, timeout: timeout, in: copyRoot, logFile: logFile
                 )
             }
-            // Keep the baseline's coverage data.
-            environment["LLVM_PROFILE_FILE"] = logDirectory.appendingPathComponent("mutant.profraw").path
             var arguments = testArguments(swift: swift, filter: filter)
             if let tests { arguments += TestSelection.filterArguments(tests) }
             return try ProcessRunner.run(
