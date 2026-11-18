@@ -27,7 +27,7 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 | 5 | 静的参照層：ビルドが書き出したインデックスを読み、referenced 列を埋める | 層 | `References.swift` |
 | 6 | 変更前の振る舞いでテストを実行する（ベースライン）。失敗したら中止する | 共通 | `Analyzer.swift` |
 | 7 | カバレッジ層：ベースラインが実行したメソッドで executed 列を埋める。Swift パッケージではミュータントスキーマが記録し、カスタムモードではベースラインのカバレッジプロファイルから読む | 層 | `SchemataRewriter.swift`, `Coverage.swift` |
-| 8 | 極端ミューテーション層：実行されたメソッドのミュータントごとに、そのミュータントを有効にしてテストを実行し、verified 列を埋める | 層 | `Analyzer.swift`, `DirectTestLauncher.swift`, `ProcessRunner.swift` |
+| 8 | 極端ミューテーション層：実行されたメソッドのミュータントごとに、そのミュータントを有効にしてテストを実行し、verified 列を埋める | 層 | `Analyzer.swift`, `DirectTestLauncher.swift`, `ResidentRunner.swift`, `ProcessRunner.swift` |
 | 9 | 列を宣言ごとの指摘にまとめ、レポートを生成する | 共通 | `Models.swift`（`Classifier`）, `Reporter.swift` |
 
 `--dry-run` はステージ 2（`Analyzer.plan()`）で止まります。
@@ -93,6 +93,20 @@ Swift パッケージでは、ミュータントスキーマがメソッドを�
 
 作業ディレクトリでの最初のベースラインは `swift test` で流し、`verify` がランチャーをそれと比べます。そのあと `Analyzer` は、ランチャーの `identity`（ツール、バンドル、環境変数）を `cache.json` に残します。次回以降、ランチャーの identity が同じなら、ランチャー自身が全テストを流した実行をベースラインにします（`runBaselineDirectly`）。`swift test` は流さず、`verify` のための 2 回目の実行もありません。この実行が失敗するか、テストを 1 つも実行しなければ、identity を消し、`swift test` でベースラインを流して何が失敗するかを示し、ランチャーを比べ直します。`--test-filter`（XCTest に正規表現を適用するにはテストの一覧が必要）や `--no-direct-launch` を指定したとき、またはチェックに通らなかったときは、すべての実行を `swift test` 経由で流します。
 
+#### 常駐ホスト
+
+`ResidentRunner.swift`、`ResidentHostSource.swift`。直接起動しても、実行のたびにプロセスが 1 つ要ります。プロセスを起動してテストバンドルを読み込む時間は、選んだテストを流す時間より長いことがほとんどです。そこでミュータントの実行では、`ResidentRunner` がワーカーとテストバンドルごとにプロセスを 1 つ残し、ミュータントのテストを続けて流します。プロセスは最初に必要になったときに起動します。
+
+- **ホストは独立したプログラム。** `ResidentHostSource` を、`ResidentHostBuilder` がパッケージのツールチェーンでコンパイルして `<作業ディレクトリ>/host` に置く（約 2 秒。ツールチェーンとソースの版ごとに 1 回で、キーは `cache.json` に残す）。このツールの動作モードにはしていない。テストバンドルがこのツールを構成するライブラリを含むことがあり、同じライブラリを 2 つ、1 つのプロセスに読み込むことはできないためである。ホストはバンドルを 1 つ `dlopen` で読み込み、XCTest は `XCTestSuite` で、Swift Testing は `swt_abiv0_getEntryPoint` が返すエントリポイントで流す。このエントリポイントは何度でも呼べる。バンドルはそれぞれテスト対象のコードのコピーを持つので、2 つのバンドルが 1 つのホストを共有することはない。
+- **ミュータントは実行時に切り替える。** ホストはバンドルを読み込む前に `STE_SWITCH=<プロセス ID>:<アドレス>` を設定し、書き換えた各ファイルはそのアドレスから有効なミュータントを読む（[Mutant schemata](#mutant-schemata) を参照）。ホストは `STE_MUTANT` も更新する。テストが起動するプロセスのためである。それらは `STE_SWITCH` を引き継ぐが、プロセス ID が自分のものではないので、これまでどおり `STE_MUTANT` からミュータントを読む。
+- **要求と応答は JSON の行。** ホストの標準入力と、起動時の標準出力でやり取りする（`ResidentRequest`、`ResidentHost.Reply`）。パイプは `ProcessRunner.start` が用意する（`RunningProcess`）。テストの出力は、要求が指定するログ `mutant-<id>-resident.log` に書く。要求は、ミュータントと、`DirectTestLauncher.residentSelections` が選んだものを指定する。直接起動のプロセスに渡すのと同じ、XCTest のクラスと Swift Testing のフィルタである。
+- **ホストの応答は `passed`、`killed`、`polluted` のいずれか。** ミュータントを有効にして、XCTest のクラスを 1 つずつ、続いて Swift Testing を流す。最初の失敗でミュータントを無効にし、失敗したテストのうち最も短時間で終わったものを 1 つ流し直す。通れば `killed`、通らなければ `polluted` である。ミュータントがあると失敗し、なければ通るテストが 1 つあれば、それがミュータントの検出なので、失敗したほかのテストは流し直さない。
+- **採用するのは `killed` だけ**（`ResidentRunner.detects`）。ホストは先にほかのテストを流しているので、残った状態がミュータントを隠したり、テストを失敗させたりしうる。`passed`、タイムアウト、プロセスの終了（クラッシュや `exit`）、`polluted` のあとは、`Analyzer.runMutant` がホストのなかったときと同じように進める。つまり、その実行のためのプロセスを起動する。タイムアウトしたホスト、終了したホスト、`polluted` と応答したホストは二度と使わず、そのワーカーの次のミュータントで新しいホストを起動する。
+- **ホストで流すのは短い実行だけで、タイムアウトも短い**（`RunTimeout.inResidentHost`）。ホストで節約できるのはプロセスの起動時間の 0.1 秒ほどで、ホストで決まらなかった実行は 2 回流すことになる。そのため、テストが 0.3 秒以下で終わると見込まれる実行だけをホストに回す。見込みは、スコープを単独で流したときの時間から、最も速かったスコープの時間を引いたものである（`RunTimeout.expected`）。最も速いスコープの時間は、ほぼプロセスの起動時間にあたる。タイムアウトは、この見込み × `--timeout-factor` で、下限は 5 秒ではなく 1 秒である。それより長くかかった実行は打ち切り、通常のタイムアウトを使う専用のプロセスに任せる。終わらないループがホストで待つのは 1 秒ほどで、タイムアウトを丸ごと 2 回待つことはない。
+- **やめる条件。** ホストを失った回数（`died`、`polluted`）が 5 回以上で、かつ検出したミュータントの数より多くなったら、ホストを使うのをやめる。そのようなテストでは、ほとんどの実行でホストとプロセスの両方の時間がかかるためである。
+
+残る制限は [README](README.ja.md#ミュータント用にテストプロセスを残す) に書いている。先のミュータントが残した状態とそのミュータントが重なったときだけ起きる失敗が、検出と数えられることである。
+
 #### 並列実行
 
 `Analyzer.runMutants` がミュータントを `--jobs` 個のワーカーで流します（`DispatchQueue.concurrentPerform`）。各ワーカーは `Mutex` で守った共有のインデックスから次のミュータントを取り、結果は元の位置に戻すので、レポートは実行順に左右されません。`CommandTemplate` は `{job}` をワーカーの番号に、`{result-bundle}` を `<作業ディレクトリ>/results/<ログ名>.xcresult` に置き換えます。このパスは実行前に削除し、ベースラインのもの以外は実行後にも削除します。エラーが起きたら、ワーカーはそれ以上ミュータントを取りません。Swift パッケージでは、`swift test` 経由の実行は `.build` をロックするため常に 1 つずつ流し、直接起動したテストバンドルはワーカーを使います。
@@ -147,7 +161,7 @@ func badge() -> some View { func __steOriginal() -> some View {
 - **行番号が元のソースと一致する。** 挿入はすべて既存の行の中で行う。そのため、カバレッジ（llvm-cov の関数リージョンは本体の `{` から始まる）をそのまま元の宣言に対応付けられ、コンパイルエラーの行番号も元のソースと同じになる。挿入は列を右にずらすだけなので、1 行に複数の関数が始まる場合の `CoverageMap.wasExecuted` の対応付けはこれを前提にしている。コピーを書き換える層を他に足す場合も、この不変条件を守る必要がある。
 - **単一式の本体には明示的な `return` を補う。** `if`/`switch` 式も同様だが、内部に `return` 文を含む場合は文として扱う。本体が 1 つの `#if` ブロックだけのときは、有効な節がそのまま本体になるので、単一式の節すべてに `return` を補う（入れ子のブロックも同様）。無効な節は型検査されず、どの節が有効かはビルドにしか分からないためである。
 - **opaque 型を返す本体はローカル関数に入れる。** `some View` を返すメソッドでは、すべての `return` が同じ具象型でなければならないので、元の本体の前でミュータントが `return` することはできない。そこで本体をローカル関数 `__steOriginal` に移す。元の `return` はその中に閉じ、メソッドの `return` は 1 つになる。`buildEither` は view builder の `if`/`else` が変換される先なので、型は result builder のスキーマと同じになる。ローカル関数にはメソッドの `async` と `throws` をそのまま付ける。本体に `return` がなければ `@ViewBuilder` にする。`ViewModifier.body(content:)` のような要件では、属性を書かなくても本体が view builder になり、明示的な `return` があるとそれが無効になる。`return` のない本体は、どちらの場合も builder として有効である。同じ理由で、明示的に `return` する `var body` や `@ViewBuilder` の本体も、builder の中でしかコンパイルできない `if`/`else` のスキーマではなく、このスキーマにする。
-- **スイッチはファイル単位。** `__steActiveMutant` は各ファイルの末尾に `nonisolated fileprivate let` として生成し、`getenv` で読む。ビルド設定やプロジェクトファイルを変更する必要がなく、`defaultIsolation(MainActor.self)` のモジュールでも動く。
+- **スイッチはファイル単位。** `__steActiveMutant` は各ファイルの末尾に `nonisolated fileprivate var` として生成し、ポインタ `__steSwitch` を通して `Int` を読む。ポインタはファイルが最初に使われたときに決まる。指す先は、`getenv` で `STE_MUTANT` から読んだファイル自身の値か、`STE_SWITCH=<プロセス ID>:<アドレス>` がこのプロセスを指すときはそのアドレスである（[常駐ホスト](#常駐ホスト) を参照）。ビルド設定やプロジェクトファイルを変更する必要がなく、`defaultIsolation(MainActor.self)` のモジュールでも動く。
 - **スイッチは記録も兼ねる。** 環境変数に `STE_REACHED=<ファイル>` があると、どのミュータントも有効にならず、スイッチの値は `-2` になる。各メソッドの `case -2`（`some View` では `__steMutantIs`）が、そのメソッドの最初のミュータントの ID を渡して `__steReached` を呼び、メソッドが最初に実行されたときに ID を 1 行としてファイルに追記する。書き出し済みかどうかは、ファイルごとに持つミュータント ID 1 つにつき 1 バイトの領域で覚える。書き込みは `O_APPEND` で開いたディスクリプタへの `write(2)` 1 回なので、1 回の実行の複数のプロセスやスレッドが同じファイルを共有でき、クラッシュしても記録は失われない。`STE_REACHED` がなければ、追加した case のコストはない。
 
 これにより、ミュータントを入れられない宣言が生じます（[対象外](docs/ja/methods/extreme-mutation.md#対象外) を参照）。
@@ -206,6 +220,7 @@ case のミュータントは、本体全体のミュータントの後に、`ru
 - `Tests/Fixtures/ReferencedProject` は referenced 列のためのパッケージ。protocol やスーパークラス経由の呼び出し、モックの注入、デフォルト実装、XCTestCase の `setUp()`、別のメソッド経由でしか実行されないメソッドを含む。
 - `Tests/Fixtures/HangingProject` は、ループが終わらなくなるミュータントを持つパッケージ。統合テストで、選んだテストの短いタイムアウトのあとにタイムアウトとして報告されることを確認する。
 - `Tests/Fixtures/OrderDependentProject` は、ほかのテストが先に流れたときだけ通るテストスコープを持つパッケージ。統合テストで、それが *Tests that fail alone* として報告され、テスト選択に使われないことを確認する。
+- `Tests/Fixtures/SharedStateProject` は、テストをまたいで残る状態を持つパッケージ。一度だけ計算される値と、1 つのプロセスで 1 回しか通らないテストがある。統合テストで、その影響を受けるミュータントを常駐ホストが専用のプロセスに任せることと、結果が実行のたびにプロセスを起動した場合と同じになることを確認する。
 - `Tests/Fixtures/SwitchProject` は、ロジックが switch になっているメソッドを集めたパッケージ。どれも本体全体のミュータントでは `tested` になるか、解析対象外になる。統合テストで、`--case-mutants` がどの case を報告するかを検証する。
 - `Tests/Fixtures/EdgeCases` は、if/switch 式、result builder、result builder 外の `some View`、`throws`、actor、`defaultIsolation(MainActor)` など、書き換え後もコンパイルできなければならない構文の集まり。書き換え処理を変更するときはここにケースを足す。
 

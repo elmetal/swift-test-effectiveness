@@ -184,6 +184,92 @@ public enum ProcessRunner {
         )
     }
 
+    // MARK: - Commands that keep running
+
+    /// Starts a command that keeps running and is talked to line by line through its standard
+    /// input and output (see `RunningProcess`). Its standard error is appended to `errorLog`.
+    ///
+    /// `arguments[0]` is an absolute path and starts without a shell, so that `DYLD_*` variables
+    /// reach it (see `run`). Like every command it has a process group of its own and is stopped
+    /// when a termination signal arrives.
+    static func start(
+        _ arguments: [String], in directory: URL, environment: [String: String] = [:], errorLog: URL
+    ) throws -> RunningProcess {
+        #if canImport(Darwin)
+        // Writing to a process that ended must be an error to handle, not the end of this one.
+        signal(SIGPIPE, SIG_IGN)
+        var mergedEnvironment = ProcessInfo.processInfo.environment
+        for (key, value) in environment { mergedEnvironment[key] = value }
+        let envp = mergedEnvironment.map { "\($0.key)=\($0.value)" }
+
+        var pid: pid_t = 0
+        var input: [Int32] = [-1, -1]
+        var output: [Int32] = [-1, -1]
+        // Under the lock, as every spawn is: no other command starts between the pipes being made
+        // and being marked, so none inherits an end of them. An inherited end would keep a pipe
+        // open after its process ended.
+        let status: Int32? = children.withLock { state in
+            if state.terminating { return nil }
+            guard pipe(&input) == 0 else { return errno }
+            guard pipe(&output) == 0 else {
+                let code = errno
+                close(input[0])
+                close(input[1])
+                return code
+            }
+            for descriptor in input + output { _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC) }
+
+            var fileActions: posix_spawn_file_actions_t?
+            var attributes: posix_spawnattr_t?
+            posix_spawn_file_actions_init(&fileActions)
+            defer { posix_spawn_file_actions_destroy(&fileActions) }
+            posix_spawnattr_init(&attributes)
+            defer { posix_spawnattr_destroy(&attributes) }
+            posix_spawn_file_actions_adddup2(&fileActions, input[0], 0)
+            posix_spawn_file_actions_adddup2(&fileActions, output[1], 1)
+            posix_spawn_file_actions_addopen(&fileActions, 2, errorLog.path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+            posix_spawn_file_actions_addchdir(&fileActions, directory.path)
+            posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
+            posix_spawnattr_setpgroup(&attributes, 0)
+
+            let status = withCStrings(arguments) { argvPointer in
+                withCStrings(envp) { envPointer in
+                    posix_spawn(&pid, arguments[0], &fileActions, &attributes, argvPointer, envPointer)
+                }
+            }
+            // The command's ends.
+            close(input[0])
+            close(output[1])
+            if status == 0 {
+                state.groups.insert(pid)
+            } else {
+                close(input[1])
+                close(output[0])
+            }
+            return status
+        }
+        guard let status else { parkForTermination() }
+        guard status == 0 else {
+            throw ProcessRunnerError.spawnFailed(command: arguments.joined(separator: " "), errno: status)
+        }
+        return RunningProcess(pid: pid, input: input[1], output: output[0])
+        #else
+        throw ProcessRunnerError.spawnFailed(command: arguments.joined(separator: " "), errno: ENOTSUP)
+        #endif
+    }
+
+    /// Kills the command's process group and forgets it.
+    fileprivate static func stop(_ pid: pid_t) {
+        kill(-pid, SIGKILL)
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+        let terminating = children.withLock { state in
+            state.groups.remove(pid)
+            return state.terminating
+        }
+        if terminating { parkForTermination() }
+    }
+
     /// Runs a shell command line (used for user-supplied build/test commands).
     public static func runShell(
         _ commandLine: String, in directory: URL, environment: [String: String] = [:],
@@ -209,5 +295,94 @@ public enum ProcessRunner {
         pointers.append(nil)
         defer { pointers.forEach { free($0) } }
         return pointers.withUnsafeBufferPointer { body($0.baseAddress!) }
+    }
+}
+
+/// A command started with `ProcessRunner.start`. It reads lines from its standard input and
+/// writes lines to its standard output. Used by one thread at a time.
+final class RunningProcess: @unchecked Sendable {
+    enum Line: Equatable {
+        case line(String)
+        /// Nothing complete arrived in time.
+        case timedOut
+        /// The command closed its output: it ended.
+        case closed
+    }
+
+    let pid: pid_t
+    private let input: Int32
+    private let output: Int32
+    /// Read, and not yet returned as a line.
+    private var buffer = Data()
+    private var stopped = false
+
+    fileprivate init(pid: pid_t, input: Int32, output: Int32) {
+        self.pid = pid
+        self.input = input
+        self.output = output
+    }
+
+    deinit { stop() }
+
+    /// Writes `line` and a newline. `false` when the command no longer reads.
+    func send(_ line: String) -> Bool {
+        guard !stopped else { return false }
+        let bytes = Array((line + "\n").utf8)
+        var offset = 0
+        while offset < bytes.count {
+            let written = bytes[offset...].withUnsafeBufferPointer { write(input, $0.baseAddress, $0.count) }
+            if written < 0 {
+                if errno == EINTR { continue }
+                return false
+            }
+            offset += written
+        }
+        return true
+    }
+
+    /// The next line the command writes, waiting at most `timeout` seconds for it.
+    func receive(timeout: Double?) -> Line {
+        guard !stopped else { return .closed }
+        let deadline = timeout.map { Date().addingTimeInterval($0) }
+        while true {
+            if let newline = buffer.firstIndex(of: 0x0A) {
+                let line = String(decoding: buffer[buffer.startIndex..<newline], as: UTF8.self)
+                buffer.removeSubrange(buffer.startIndex...newline)
+                return .line(line)
+            }
+            var descriptor = pollfd(fd: output, events: Int16(POLLIN), revents: 0)
+            let wait: Int32
+            if let deadline {
+                let remaining = deadline.timeIntervalSinceNow
+                if remaining <= 0 { return .timedOut }
+                wait = Int32(min(remaining * 1000, 60_000).rounded(.up))
+            } else {
+                wait = -1
+            }
+            let ready = poll(&descriptor, 1, wait)
+            if ready < 0 {
+                if errno == EINTR { continue }
+                return .closed
+            }
+            // The deadline is checked at the top.
+            if ready == 0 { continue }
+            var chunk = [UInt8](repeating: 0, count: 65_536)
+            let count = read(output, &chunk, chunk.count)
+            if count < 0 {
+                if errno == EINTR { continue }
+                return .closed
+            }
+            if count == 0 { return .closed }
+            buffer.append(contentsOf: chunk[0..<count])
+        }
+    }
+
+    /// Kills the command and what it started. Safe to call more than once.
+    func stop() {
+        guard !stopped else { return }
+        stopped = true
+        close(input)
+        close(output)
+        ProcessRunner.stop(pid)
     }
 }

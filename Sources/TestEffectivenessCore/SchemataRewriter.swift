@@ -29,6 +29,10 @@ import Foundation
 ///
 /// The local function is a `@ViewBuilder` when the body has no `return` (see `OpaqueBody`).
 ///
+/// Every file reads the active mutant through a pointer: to a value of its own, set from
+/// `STE_MUTANT` when the file is first used, or to the one a resident test host names with
+/// `STE_SWITCH` and changes between runs.
+///
 /// The same switch records which methods a test run executes: with `STE_REACHED=<file>` no mutant
 /// is active, and each method appends the id of its first mutant to the file when it is first
 /// called (see `ReachedMethods`).
@@ -36,6 +40,11 @@ public enum SchemataRewriter {
     public static let environmentVariable = "STE_MUTANT"
     /// Names a file to which the run appends the methods it executes.
     public static let reachedEnvironmentVariable = "STE_REACHED"
+    /// `<process id>:<address>` of an `Int` that holds the active mutant, for a process that runs
+    /// the tests of one mutant after the other (see `ResidentHost`). It changes the value between
+    /// runs. Only the process with that id reads the address; one that the tests start inherits
+    /// the variable, and takes its mutant from `STE_MUTANT` as before.
+    public static let switchEnvironmentVariable = "STE_SWITCH"
     static let switchName = "__steActiveMutant"
     static let errorTypeName = "__STEExtremeMutationError"
     /// The local function that keeps the original body of a method with an opaque result.
@@ -176,11 +185,23 @@ public enum SchemataRewriter {
             guard let path = getenv("\(reachedEnvironmentVariable)") else { return -1 }
             return open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
         }()
-        nonisolated fileprivate let \(switchName): Int = {
-            if __steReachedFile >= 0 { return \(recordingValue) }
-            guard let raw = getenv("\(environmentVariable)") else { return -1 }
-            return Int(String(cString: raw)) ?? -1
+        nonisolated(unsafe) fileprivate let __steSwitch: UnsafePointer<Int> = {
+            if __steReachedFile < 0, let raw = getenv("\(switchEnvironmentVariable)") {
+                let parts = String(cString: raw).split(separator: ":")
+                if parts.count == 2, Int32(parts[0]) == getpid(), let address = UInt(parts[1]),
+                   let shared = UnsafePointer<Int>(bitPattern: address) { return shared }
+            }
+            let own = UnsafeMutablePointer<Int>.allocate(capacity: 1)
+            if __steReachedFile >= 0 {
+                own.initialize(to: \(recordingValue))
+            } else if let raw = getenv("\(environmentVariable)") {
+                own.initialize(to: Int(String(cString: raw)) ?? -1)
+            } else {
+                own.initialize(to: -1)
+            }
+            return UnsafePointer(own)
         }()
+        nonisolated fileprivate var \(switchName): Int { __steSwitch.pointee }
         nonisolated(unsafe) fileprivate let __steReachedFlags: UnsafeMutablePointer<UInt8> = {
             let flags = UnsafeMutablePointer<UInt8>.allocate(capacity: \(mutantIDs.count))
             flags.initialize(repeating: 0, count: \(mutantIDs.count))

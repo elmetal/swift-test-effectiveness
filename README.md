@@ -112,6 +112,7 @@ Options for a specific method:
 | `--arid-call <name>` | extreme mutation | Also treat calls to this function as logging, e.g. `track` or `Analytics.shared.track` (repeatable) |
 | `--jobs <n>` | extreme mutation | Run this many test runs at once (see [Parallel runs](#parallel-runs)) |
 | `--no-direct-launch` | extreme mutation | Swift packages: run every test run through `swift test` instead of [starting the test bundles directly](#starting-swift-package-tests-directly) |
+| `--no-resident-host` | extreme mutation | Swift packages: start a process for every test run instead of [keeping test processes](#keeping-test-processes-for-the-mutants) that run one mutant after the other |
 | `--timeout-factor`, `--minimum-timeout` | extreme mutation | [Timeout](#timeouts) of each test run: what the run is expected to take × factor (default 3), with a minimum in seconds (default 30, or 5 when the test bundles of a Swift package are started directly) |
 | `--no-test-selection` | extreme mutation | Run the whole test suite for every mutant instead of [the tests that execute its method](#test-selection) |
 | `--rerun-survivors` | extreme mutation | Run a mutant that survives [the tests that execute its method](#test-selection) against the whole suite as well |
@@ -171,6 +172,27 @@ Each mutant run executes the test suite, so a large suite makes the analysis slo
 After the baseline, the tool starts the test bundles itself (`xctest` for XCTest, SwiftPM's `swiftpm-testing-helper` for Swift Testing) instead of running `swift test` for every run. `swift test` loads the package before it starts the tests, which takes about a second per run, and it locks `.build`, so its runs cannot overlap. Started directly, a run costs little more than the tests themselves, and `--jobs` applies.
 
 Before relying on it, the tool runs the whole suite directly once, without mutations, and checks that it passes and executes as many tests as the baseline did (`direct-launch-check.log`). If not, every run goes through `swift test`, one at a time, and the log says why. The same happens with `--test-filter` and `--no-direct-launch`.
+
+#### Keeping test processes for the mutants
+
+Started directly, a run still costs a process, and starting it and loading the test bundle takes longer than most selections of tests do. So for the mutants the tool keeps a process per worker and test bundle (the *resident host*) that loads the bundle once and runs the tests of one mutant after the other. The host is a small program that the tool compiles with your toolchain into `<work dir>/host` the first time.
+
+A process that has run other tests is not a fresh one, so it is believed only when it finds a mutant detected: a test fails with the mutant, and that test passes again without it in the same process. Every other run gets a process of its own, as before:
+
+- A mutant whose tests pass in the kept process. State that earlier tests left can hide what a mutant does, for example a value that is computed once.
+- A run that times out or ends the process (a crash).
+- A test that fails again without the mutant: the tests do not pass in a process that has run them before.
+
+So a mutant is only ever reported as surviving by a process of its own.
+
+Only runs that are expected to be short go to a kept process: those whose tests took at most 0.3 seconds when their scopes ran alone, not counting the start of the processes. A kept process saves about a tenth of a second per run, and a run it cannot decide takes place twice, which for long tests costs more than it saves. Longer runs start a process right away.
+
+When the tests end the kept process, or fail in it without a mutant, more often than they detect a mutant there, the tool stops keeping processes and says so. The log ends with how many runs were decided where; `mutant-<id>-resident.log` has what the tests printed in the kept process. `--no-resident-host` starts a process for every run.
+
+Two things to know:
+
+- A mutant can count as detected that a process of its own would not detect: when a test fails only because of the mutant together with state an earlier mutant left, and passes without the mutant. If you suspect that, compare with `--no-resident-host`.
+- In a kept process, a run is stopped after `--timeout-factor` times what it is expected to take, and after one second at the earliest. It then runs in a process of its own with the usual [timeout](#timeouts). So an endless loop in a short test takes about a second longer than without kept processes.
 
 #### Custom mode
 

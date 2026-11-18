@@ -75,6 +75,10 @@ public struct AnalysisConfiguration: Sendable {
     /// well, even when those tests are known to be every test that executes it (see
     /// `RecordedReach`).
     public var rerunSurvivors: Bool
+    /// SwiftPM, with the test bundles started directly: keep a process per worker and test bundle
+    /// that runs the tests of one mutant after the other, and start a process for a run only when
+    /// that one does not find the mutant detected (see `ResidentRunner`).
+    public var residentHost: Bool
 
     public init(
         projectPath: URL,
@@ -93,7 +97,8 @@ public struct AnalysisConfiguration: Sendable {
         testSelection: Bool = true,
         jobs: Int = 1,
         directLaunch: Bool = true,
-        rerunSurvivors: Bool = false
+        rerunSurvivors: Bool = false,
+        residentHost: Bool = true
     ) {
         self.projectPath = projectPath.standardizedFileURL
         self.workDirectory = (workDirectory
@@ -113,6 +118,7 @@ public struct AnalysisConfiguration: Sendable {
         self.jobs = max(1, jobs)
         self.directLaunch = directLaunch
         self.rerunSurvivors = rerunSurvivors
+        self.residentHost = residentHost
     }
 }
 
@@ -145,6 +151,10 @@ public final class Analyzer: @unchecked Sendable {
     private var package: (name: String, testTargets: [String])?
     /// SwiftPM: set once starting the test bundles directly gave the baseline's results.
     private var directLauncher: DirectTestLauncher?
+    /// SwiftPM: the processes that run one mutant after the other, when there are any.
+    private var residentRunner: ResidentRunner?
+    /// How long a run of the whole suite may take in one of them; `nil`: it does not run there.
+    private var residentWholeSuiteTimeout: Double?
     /// SwiftPM: the answer of `swift build --show-bin-path`, which takes about a second to ask.
     private var knownBinPath: URL?
     /// `knownBinPath` is what an earlier run was told, not this one.
@@ -245,6 +255,8 @@ public final class Analyzer: @unchecked Sendable {
         if directLauncher != nil, configuration.minimumTimeout == nil {
             runTimeout.minimum = RunTimeout.defaultMinimumForDirectLaunch
         }
+        setUpResidentHosts()
+        defer { residentRunner?.shutdown() }
         let timeout = runTimeout.wholeSuite
         log(String(
             format: "Timeout for a run of the whole suite: %.0fs; for selected tests: %.0f times what they "
@@ -254,6 +266,17 @@ public final class Analyzer: @unchecked Sendable {
         let (selectable, testsFailingAlone, recorded, aloneDurations) = try selectableTests(
             references, baselineTests: TestOutput.executedTests(in: baselineOutput), timeout: timeout
         )
+
+        // What a run costs besides its tests: the quickest scope is little more than that. Only
+        // runs that are short without it go to a resident host (see `RunTimeout`).
+        let overhead = aloneDurations.values.min() ?? 0
+        func residentTimeout(_ tests: [TestSelector]?) -> Double? {
+            let expected = tests.map { tests in
+                RunTimeout.expected(aloneDurations: tests.map { aloneDurations[$0] }, overhead: overhead)
+            } ?? (directLauncher != nil ? max(0, baselineDuration - overhead) : nil)
+            return runTimeout.inResidentHost(expected: expected)
+        }
+        residentWholeSuiteTimeout = residentTimeout(nil)
 
         // Decide up front which mutants run, so that progress can show the total.
         var planned: [(method: DiscoveredMethod, mutants: [Mutant], reached: Bool?, cases: [[Mutant]])] = []
@@ -316,10 +339,12 @@ public final class Analyzer: @unchecked Sendable {
             let selectedTimeout = tests.map { tests in
                 runTimeout.selected(aloneDurations: tests.map { aloneDurations[$0] })
             } ?? timeout
+            let residentSelectedTimeout = residentTimeout(tests)
             for (mutantIndex, mutant) in mutants.enumerated() {
                 work.append(MutantRun(
                     method: methodIndex, index: mutantIndex, mutant: mutant, tests: tests,
-                    selectedTimeout: selectedTimeout, rerunsSurvivor: !selectionIsExact, name: method.info.name
+                    selectedTimeout: selectedTimeout, residentTimeout: residentSelectedTimeout,
+                    rerunsSurvivor: !selectionIsExact, name: method.info.name
                 ))
             }
         }
@@ -359,11 +384,13 @@ public final class Analyzer: @unchecked Sendable {
                 let selectedTimeout = tests.map { tests in
                     runTimeout.selected(aloneDurations: tests.map { aloneDurations[$0] })
                 } ?? timeout
+                let residentSelectedTimeout = residentTimeout(tests)
                 for mutant in mutants {
                     // `index` is the case here: its results arrive in the order of its mutants.
                     caseWork.append(MutantRun(
                         method: methodIndex, index: results.count - 1, mutant: mutant, tests: tests,
-                        selectedTimeout: selectedTimeout, rerunsSurvivor: !selectionIsExact,
+                        selectedTimeout: selectedTimeout, residentTimeout: residentSelectedTimeout,
+                        rerunsSurvivor: !selectionIsExact,
                         name: "\(method.info.name), \(discovered.label)"
                     ))
                 }
@@ -396,6 +423,12 @@ public final class Analyzer: @unchecked Sendable {
             )
         }
 
+        if let resident = residentRunner?.statistics {
+            log("Kept test processes: \(resident.detected) runs found their mutant detected there; "
+                + "\(resident.passed + resident.timedOut + resident.died + resident.polluted) were left to "
+                + "processes of their own (\(resident.passed) passed there, \(resident.timedOut) timed out, "
+                + "\(resident.died) ended the process, \(resident.polluted) failed again without the mutant).")
+        }
         if selectable != nil {
             log("Test selection: \(statistics.decidedBySelection) mutants detected by the selected tests; "
                 + "\(statistics.survivedSelection) survived them, which are every test that executes their method; "
@@ -861,6 +894,34 @@ public final class Analyzer: @unchecked Sendable {
         return try resolution.get()
     }
 
+    /// SwiftPM, with the test bundles started directly: compiles the test host that runs one
+    /// mutant after the other, unless an earlier run left it in the work directory.
+    private func setUpResidentHosts() {
+        guard configuration.residentHost, let directLauncher,
+              case .swiftPM(let swift, _, _) = configuration.buildSystem, let toolchain = toolchain(swift: swift)
+        else { return }
+        do {
+            let executable = try ResidentHostBuilder.build(
+                toolchain: toolchain, platformPath: directLauncher.platformPath,
+                into: configuration.workDirectory.appendingPathComponent("host"), builtKey: cache.residentHost
+            )
+            let key = ResidentHostBuilder.key(toolchain: toolchain, platformPath: directLauncher.platformPath)
+            if cache.residentHost != key {
+                cache.residentHost = key
+                cache.save(to: cacheFile)
+            }
+            residentRunner = ResidentRunner(
+                executable: executable, launcher: directLauncher, directory: copyRoot, logDirectory: logDirectory,
+                log: log
+            )
+            log("Keeping a test process per worker and test bundle: a mutant is detected there when a test "
+                + "fails with it and passes again without it; every other run gets a process of its own.")
+        } catch {
+            // Never a reason to stop the analysis.
+            log("Cannot keep test processes: \(error); starting processes for every run.")
+        }
+    }
+
     // MARK: - Test selection
 
     /// Whether the configuration asks for test selection and the build system supports it.
@@ -1101,6 +1162,8 @@ public final class Analyzer: @unchecked Sendable {
         var tests: [TestSelector]?
         /// The timeout of the run of `tests`.
         var selectedTimeout: Double
+        /// The timeout of the run of `tests` in a resident host; `nil`: it does not run there.
+        var residentTimeout: Double?
         /// Run the whole suite when the mutant survives `tests`.
         var rerunsSurvivor = true
         var name: String
@@ -1138,6 +1201,7 @@ public final class Analyzer: @unchecked Sendable {
                     var statistics = SelectionStatistics()
                     let result = try runMutant(
                         run.mutant, tests: run.tests, selectedTimeout: run.selectedTimeout,
+                        residentTimeout: run.residentTimeout,
                         rerunsSurvivor: run.rerunsSurvivor, timeout: timeout, job: worker + 1,
                         statistics: &statistics
                     )
@@ -1163,11 +1227,27 @@ public final class Analyzer: @unchecked Sendable {
     /// Runs the selected tests first, if any, and the whole suite when the mutant survives them,
     /// unless they are known to be every test that executes the mutant's method.
     private func runMutant(
-        _ mutant: Mutant, tests: [TestSelector]?, selectedTimeout: Double, rerunsSurvivor: Bool,
+        _ mutant: Mutant, tests: [TestSelector]?, selectedTimeout: Double, residentTimeout: Double?,
+        rerunsSurvivor: Bool,
         timeout: Double, job: Int, statistics: inout SelectionStatistics
     ) throws -> MutantResult {
         var duration = 0.0
+        // A process that has run other mutants before only ever says that this one is detected;
+        // everything else is for a process of its own to say (see `ResidentRunner`).
+        func isDetectedInResidentHost(by tests: [TestSelector]?, timeout: Double?) -> Bool {
+            guard let residentRunner, let timeout else { return false }
+            let start = Date()
+            defer { duration += Date().timeIntervalSince(start) }
+            return residentRunner.detects(
+                mutant: mutant.id, tests: tests, timeout: timeout, worker: job,
+                logFile: logDirectory.appendingPathComponent("mutant-\(mutant.id)-resident.log")
+            )
+        }
         if let tests {
+            if isDetectedInResidentHost(by: tests, timeout: residentTimeout) {
+                statistics.decidedBySelection += 1
+                return MutantResult(mutant: mutant, outcome: .killed, duration: duration)
+            }
             let selected = try executeTests(
                 tests, mutant: mutant, timeout: selectedTimeout, job: job,
                 logFile: logDirectory.appendingPathComponent("mutant-\(mutant.id)-selected.log")
@@ -1184,6 +1264,9 @@ public final class Analyzer: @unchecked Sendable {
             statistics.reran += 1
         } else {
             statistics.wholeSuite += 1
+        }
+        if isDetectedInResidentHost(by: nil, timeout: residentWholeSuiteTimeout) {
+            return MutantResult(mutant: mutant, outcome: .killed, duration: duration)
         }
         let result = try executeTests(
             nil, mutant: mutant, timeout: timeout, job: job,

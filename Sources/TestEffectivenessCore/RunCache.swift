@@ -40,6 +40,8 @@ struct RunCache: Codable, Equatable {
     /// `DirectTestLauncher.identity` of the launcher that ran the tests the baseline of
     /// `swift test` ran.
     var verifiedLauncher: String?
+    /// `ResidentHostBuilder.key` of the test host compiled into the work directory.
+    var residentHost: String?
 
     static func load(_ file: URL) -> RunCache {
         guard let data = try? Data(contentsOf: file),
@@ -64,6 +66,7 @@ struct RunCache: Codable, Equatable {
         binPath = nil
         builtWith = nil
         verifiedLauncher = nil
+        residentHost = nil
     }
 }
 

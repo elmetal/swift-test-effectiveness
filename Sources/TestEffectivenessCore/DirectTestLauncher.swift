@@ -59,6 +59,8 @@ struct DirectTestLauncher: Sendable {
     var environment: [String: String]
     /// Passes that ran no test in the whole suite; they are not started again.
     var emptyPasses: Set<Pass> = []
+    /// `xcrun --show-sdk-platform-path`: where XCTest and Swift Testing are.
+    var platformPath = ""
 
     /// What decides which processes the launcher starts and how: the tools, the bundles and the
     /// environment. A launcher that ran the tests of `swift test` does so again as long as this
@@ -108,6 +110,36 @@ struct DirectTestLauncher: Sendable {
                         + [bundle.executable, "--testing-library", "swift-testing"]
                 ))
             }
+        }
+        return result
+    }
+
+    /// What a resident host runs for one bundle (see `ResidentRequest`).
+    struct ResidentSelection: Equatable {
+        var bundle: Bundle
+        var xctest: [String]?
+        var testing: [String]?
+    }
+
+    /// What resident hosts run for `tests` (`nil`: the whole suite), in order: what `commands`
+    /// starts processes for, with both libraries of a bundle in one host.
+    func residentSelections(for tests: [TestSelector]?) -> [ResidentSelection] {
+        var result: [ResidentSelection] = []
+        for bundle in bundles {
+            var selection = ResidentSelection(bundle: bundle)
+            let runsXCTest = !emptyPasses.contains(Pass(bundle: bundle, library: .xctest))
+            let runsTesting = !emptyPasses.contains(Pass(bundle: bundle, library: .swiftTesting))
+            if let tests {
+                let inBundle = tests.filter { bundle.module == nil || $0.module == bundle.module }.sorted()
+                if inBundle.isEmpty { continue }
+                let types = inBundle.filter { !$0.isFunction }.map { "\($0.module).\($0.name)" }
+                if runsXCTest, !types.isEmpty { selection.xctest = types }
+                if runsTesting { selection.testing = [inBundle.map(\.filterPattern).joined(separator: "|")] }
+            } else {
+                if runsXCTest { selection.xctest = [] }
+                if runsTesting { selection.testing = [] }
+            }
+            if selection.xctest != nil || selection.testing != nil { result.append(selection) }
         }
         return result
     }
@@ -269,7 +301,9 @@ struct DirectTestLauncher: Sendable {
         ] {
             environment[key] = ([path] + (current[key].map { [$0] } ?? [])).joined(separator: ":")
         }
-        return DirectTestLauncher(xctest: xctest, helper: helper, bundles: bundles, environment: environment)
+        return DirectTestLauncher(
+            xctest: xctest, helper: helper, bundles: bundles, environment: environment, platformPath: platform
+        )
     }
 
     private static func bundle(named name: String, module: String?, in binPath: URL) -> Bundle? {

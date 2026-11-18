@@ -86,6 +86,9 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Flag(inversion: .prefixedNo, help: "SwiftPM: after the baseline, start the test bundles directly instead of through `swift test`, which is faster and lets runs overlap (--jobs). Not with --test-filter.")
     var directLaunch = true
 
+    @Flag(inversion: .prefixedNo, help: "SwiftPM, with the test bundles started directly: keep a process per worker and test bundle that runs the tests of one mutant after the other. A mutant counts as detected there when a test fails with it and passes again without it; every other run gets a process of its own.")
+    var residentHost = true
+
     @Option(help: "Directory for the mutated copy and logs (default: <project>/.build/test-effectiveness).")
     var workDir: String?
 
@@ -153,7 +156,8 @@ struct SwiftTestEffectiveness: ParsableCommand {
             testSelection: testSelection,
             jobs: jobs,
             directLaunch: directLaunch,
-            rerunSurvivors: rerunSurvivors
+            rerunSurvivors: rerunSurvivors,
+            residentHost: residentHost
         )
         let quiet = self.quiet
         let analyzer = Analyzer(configuration: configuration) { message in
