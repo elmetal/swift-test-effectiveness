@@ -1,7 +1,8 @@
 import Foundation
 
-/// Function-level execution counts from an `llvm-cov export` JSON file (what
-/// `swift test --enable-code-coverage` writes to `--show-codecov-path`).
+/// Function-level execution counts from an `llvm-cov export` JSON file. Custom mode reads them
+/// from the profile the baseline writes; a Swift package's mutant schema records the executed
+/// methods itself (see `ExecutedMethods`).
 ///
 /// Coverage measures only the *Execution* step of the PIE model. It is used here to (1) label
 /// methods that no test reaches as `not-covered`, and (2) avoid running mutants that cannot

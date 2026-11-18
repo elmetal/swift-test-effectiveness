@@ -15,13 +15,14 @@ struct IntegrationTests {
     private func analyze(
         _ fixture: String, throwMutants: Bool = false, caseMutants: Bool = false, testSelection: Bool = true,
         jobs: Int = 1, directLaunch: Bool = true, rerunSurvivors: Bool = false,
-        minimumTimeout: Double? = 120,
+        minimumTimeout: Double? = 120, workDirectory: URL? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws -> AnalysisReport {
         let project = Self.fixturesRoot.appendingPathComponent(fixture)
         let configuration = AnalysisConfiguration(
             projectPath: project,
-            workDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("ste-it-\(fixture)"),
+            workDirectory: workDirectory
+                ?? FileManager.default.temporaryDirectory.appendingPathComponent("ste-it-\(fixture)"),
             buildSystem: .swiftPM(swiftExecutable: Self.swift, targets: [], testFilter: nil),
             discovery: DiscoveryOptions(includeThrowMutants: throwMutants, caseMutants: caseMutants),
             minimumTimeout: minimumTimeout,
@@ -31,6 +32,45 @@ struct IntegrationTests {
             rerunSurvivors: rerunSurvivors
         )
         return try Analyzer(configuration: configuration, log: log).run()
+    }
+
+    /// A second run in a work directory does not ask again what the first one found out: it does
+    /// not build a copy that did not change, and its baseline is a run of the test bundles started
+    /// directly instead of `swift test`. Its report is the first run's. A file of the copy that
+    /// differs from the project's is copied again, and then the copy is built.
+    @Test func secondRunInAWorkDirectoryNeitherBuildsNorRunsSwiftTest() throws {
+        let workDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("ste-it-rerun")
+        try? FileManager.default.removeItem(at: workDirectory)
+        defer { try? FileManager.default.removeItem(at: workDirectory) }
+        func summary(_ report: AnalysisReport) -> [String] {
+            report.methods.map {
+                "\($0.method.name) \($0.classification) \($0.executed) \($0.referenced) \($0.mutants.map(\.outcome))"
+            } + report.skipped.map { "\($0.method.name): \($0.reason)" }
+        }
+        let notBuilding = "Not building: nothing in the copy changed since it was built."
+        let directBaseline = "Starting the test bundles directly, as for the baseline"
+
+        let firstMessages = Messages()
+        let first = try analyze("SampleProject", workDirectory: workDirectory) { firstMessages.append($0) }
+        #expect(firstMessages.all.contains("Building mutant schema…"))
+        #expect(firstMessages.all.contains { $0.hasPrefix("Starting the test bundles directly from here on") })
+
+        let secondMessages = Messages()
+        let second = try analyze("SampleProject", workDirectory: workDirectory) { secondMessages.append($0) }
+        #expect(secondMessages.all.contains(notBuilding))
+        #expect(!secondMessages.all.contains("Building mutant schema…"))
+        #expect(secondMessages.all.contains { $0.hasPrefix(directBaseline) })
+        #expect(summary(second) == summary(first))
+        #expect(second.coverageAvailable)
+
+        let manifest = workDirectory.appendingPathComponent("project/Package.swift")
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: manifest.path)
+        let thirdMessages = Messages()
+        let third = try analyze("SampleProject", workDirectory: workDirectory) { thirdMessages.append($0) }
+        #expect(thirdMessages.all.contains("Building mutant schema…"))
+        #expect(!thirdMessages.all.contains(notBuilding))
+        #expect(thirdMessages.all.contains { $0.hasPrefix(directBaseline) })
+        #expect(summary(third) == summary(first))
     }
 
     /// `Tests/Fixtures/HangingProject`: with `isDone` returning `false`, `count()` loops for ever.

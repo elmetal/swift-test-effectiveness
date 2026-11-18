@@ -59,7 +59,7 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Option(name: .customLong("arid-call"), help: "Also treat calls to this function as logging, e.g. `track` or `Analytics.shared.track` (repeatable).")
     var aridCalls: [String] = []
 
-    @Flag(inversion: .prefixedNo, help: "Use code coverage to skip mutants of methods no test executes (custom mode: needs --coverage-profdata and --coverage-binary).")
+    @Flag(inversion: .prefixedNo, help: "Find out which methods the tests execute, and skip the mutants of the others (custom mode: from code coverage, which needs --coverage-profdata and --coverage-binary).")
     var coverage = true
 
     @Flag(inversion: .prefixedNo, help: "Read the compiler's index to report whether any test refers to each method directly.")

@@ -7,9 +7,10 @@ import Foundation
 /// with a mutant only needs what `swift test` does last: for each test bundle, start
 /// `xctest <bundle>` for the XCTest tests and `swiftpm-testing-helper` for the Swift Testing tests.
 ///
-/// The baseline still runs through `swift test`, which also merges the coverage data. `verify`
-/// then runs the whole suite directly and compares it with the baseline; the launcher is only used
-/// when both executed the same number of tests and passed.
+/// The first baseline in a work directory still runs through `swift test`. `verify` then runs the
+/// whole suite directly and compares it with the baseline; the launcher is only used when both
+/// executed the same number of tests and passed. Later runs take the launcher's own run of the
+/// whole suite as the baseline, as long as the launcher is the one that was compared (`identity`).
 struct DirectTestLauncher: Sendable {
     struct Unavailable: Error, CustomStringConvertible {
         var description: String
@@ -54,11 +55,20 @@ struct DirectTestLauncher: Sendable {
     var xctest: String
     var helper: String
     var bundles: [Bundle]
-    /// What `swift test` adds for the test processes, and a place for the profile data of a build
-    /// with coverage that does not overwrite the baseline's.
+    /// What `swift test` adds for the test processes.
     var environment: [String: String]
     /// Passes that ran no test in the whole suite; they are not started again.
     var emptyPasses: Set<Pass> = []
+
+    /// What decides which processes the launcher starts and how: the tools, the bundles and the
+    /// environment. A launcher that ran the tests of `swift test` does so again as long as this
+    /// is the same.
+    var identity: String {
+        Digest.of(
+            [xctest, helper] + bundles.map(\.path)
+                + environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
+        )
+    }
 
     // MARK: - Commands
 
@@ -163,6 +173,24 @@ struct DirectTestLauncher: Sendable {
         )
     }
 
+    // MARK: - Whole suite
+
+    /// Runs the whole suite without mutations. When it passes, the passes that ran no test are
+    /// not started again. Returns the number of tests the run executed.
+    mutating func runWholeSuite(
+        environment: [String: String] = [:], timeout: Double?, in directory: URL, logFile: URL
+    ) throws -> (result: ProcessResult, executedTests: Int) {
+        emptyPasses = []
+        let (result, outputs) = try execute(
+            commands(for: nil), environment: environment, timeout: timeout, in: directory, logFile: logFile
+        )
+        let counts = outputs.map { (pass: $0.pass, count: TestOutput.executedTests(in: $0.output)) }
+        if !result.timedOut, result.exitCode == 0 {
+            emptyPasses = Set(counts.filter { $0.count == 0 }.map(\.pass))
+        }
+        return (result, counts.reduce(0) { $0 + $1.count })
+    }
+
     // MARK: - Verification
 
     /// Runs the whole suite directly, without mutations, and compares it with the baseline that
@@ -178,19 +206,15 @@ struct DirectTestLauncher: Sendable {
         guard expected > 0 else {
             return Unavailable(description: "could not read the number of tests the baseline executed")
         }
-        let (result, outputs) = try execute(
-            commands(for: nil), environment: [:], timeout: timeout, in: directory, logFile: logFile
-        )
+        let (result, executed) = try runWholeSuite(timeout: timeout, in: directory, logFile: logFile)
         guard !result.timedOut, result.exitCode == 0 else {
             return Unavailable(description: "the tests do not pass when started directly (see \(logFile.path))")
         }
-        let counts = outputs.map { (pass: $0.pass, count: TestOutput.executedTests(in: $0.output)) }
-        let executed = counts.reduce(0) { $0 + $1.count }
         guard executed == expected else {
+            emptyPasses = []
             return Unavailable(description: "starting the tests directly executed \(executed) tests, "
                 + "the baseline \(expected) (see \(logFile.path))")
         }
-        emptyPasses = Set(counts.filter { $0.count == 0 }.map(\.pass))
         return nil
     }
 
@@ -202,7 +226,7 @@ struct DirectTestLauncher: Sendable {
     ///   - packageName: the package's name, for the bundle with every target's tests.
     ///   - testTargets: names of the package's test targets, for a bundle per target.
     static func resolve(
-        swift: String, binPath: URL, packageName: String, testTargets: [String], in directory: URL
+        toolchain: Toolchain, binPath: URL, packageName: String, testTargets: [String], in directory: URL
     ) throws(Unavailable) -> DirectTestLauncher {
         var bundles: [Bundle] = []
         for target in testTargets.sorted() {
@@ -231,19 +255,14 @@ struct DirectTestLauncher: Sendable {
         guard let platform = tool(["xcrun", "--sdk", "macosx", "--show-sdk-platform-path"]) else {
             throw Unavailable(description: "`xcrun --show-sdk-platform-path` failed")
         }
-        // <toolchain>/usr/lib/swift → <toolchain>/usr/libexec/swift/pm/swiftpm-testing-helper
-        guard let resources = ReferenceColumn.runtimeResourcePath(swift: swift) else {
-            throw Unavailable(description: "`\(swift) -print-target-info` failed")
-        }
-        let helper = resources.deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("libexec/swift/pm/swiftpm-testing-helper").path
+        let helper = toolchain.testingHelper
         guard FileManager.default.isExecutableFile(atPath: helper) else {
             throw Unavailable(description: "no swiftpm-testing-helper at \(helper)")
         }
 
         // XCTest.framework and Testing.framework are in the platform, not on the default search path.
         let current = ProcessInfo.processInfo.environment
-        var environment = ["LLVM_PROFILE_FILE": "/dev/null"]
+        var environment: [String: String] = [:]
         for (key, path) in [
             ("DYLD_FRAMEWORK_PATH", "\(platform)/Developer/Library/Frameworks"),
             ("DYLD_LIBRARY_PATH", "\(platform)/Developer/usr/lib"),

@@ -79,7 +79,7 @@ Check the installed version with `swift-test-effectiveness --version`.
 swift-test-effectiveness /path/to/package
 ```
 
-The project is copied to `<package>/.build/test-effectiveness` and analysed there, so your original sources are never modified. The copy is kept and updated on later runs, so they only rebuild what changed. The test suite must first pass on the unmodified code (the baseline); otherwise the analysis stops. See [ARCHITECTURE.md](ARCHITECTURE.md#pipeline) for the pipeline.
+The project is copied to `<package>/.build/test-effectiveness` and analysed there, so your original sources are never modified. The copy is kept and updated on later runs, so they only rebuild what changed; a Swift package whose copy did not change is not built at all (see [Later runs in the same work directory](#later-runs-in-the-same-work-directory)). The test suite must first pass on the unmodified code (the baseline); otherwise the analysis stops. See [ARCHITECTURE.md](ARCHITECTURE.md#pipeline) for the pipeline.
 
 ### Options
 
@@ -103,7 +103,7 @@ Options for a specific method:
 |---|---|---|
 | `--no-index` | static references | Do not write or read the compiler's index; the referenced column is unknown |
 | `--index-store-path <path>` | static references | Index store to read (default for packages: the one the build writes; needed in custom mode) |
-| `--no-coverage` | coverage | Do not collect coverage; run the later methods on every declaration |
+| `--no-coverage` | coverage | Do not find out which methods the tests execute; run the later methods on every declaration |
 | `--coverage-profdata <path>` | coverage | Custom mode: the `.profdata` the test command writes, or a directory to search for the newest one |
 | `--coverage-binary <path>` | coverage | Custom mode: a binary built with coverage, or a directory to search for binaries (repeatable) |
 | `--throw-mutants` | extreme mutation | Add a `throw` mutant for methods declared with untyped `throws` |
@@ -158,7 +158,7 @@ Each mutant run executes the test suite, so a large suite makes the analysis slo
 - A mutant that survives the selected scopes is not run again when the scopes are the whole suite: every scope can be selected and passes alone, and together they executed as many tests as the baseline. Otherwise it runs the whole suite as well, and the log says why. The test counts are read from the test output, so in custom mode they are unknown when `xcodebuild` runs with `-quiet`. `--rerun-survivors` always runs a survivor against the whole suite.
 - When the runs record nothing (for example a sandboxed test host, which cannot write the file), the selected tests are the scopes that reach one of the method's symbols in the compiler's index, following calls through test helpers and production code. The index sees only the calls the compiler can resolve, so a mutant that survives these scopes always runs the whole suite.
 - It needs the index, which lists the test scopes. SwiftPM: on by default, but not with `--test-filter`. Custom mode: on when the test command contains `{only-testing}`, which is replaced with `'-only-testing:<module>/<Type>'` and `'-only-testing:<module>/<function>()'` arguments (and with nothing when the whole suite runs).
-- Before the mutants, every selectable test runs once without mutations. If that fails, each test module is tried on its own and a module that still fails is never selected (for example a target the scheme does not contain, or a target whose name differs from its module name). The logs are `selection-check*.log`.
+- Before the mutants, every selectable test runs once without mutations. If that fails, each test module is tried on its own and a module that still fails is never selected (for example a target the scheme does not contain, or a target whose name differs from its module name). The logs are `selection-check*.log`. A Swift package whose test bundles are started directly skips this run when it has more than one test scope: a selector that matches nothing fails no run there, and the next check runs each scope on its own.
 - Then each selectable test scope runs once on its own, without mutations (one run per scope, on the `--jobs` workers). A scope that fails alone passes in the whole suite only because other tests ran first or share state with it; selected alone, it would fail and make a mutant look detected. Such scopes are never selected, so mutants that only they reach run the whole suite, and the report lists them under *Tests that fail alone*. The logs are `isolation-*.log`, and the methods each run executed are in `<work dir>/reached`. On a large suite this check is the main fixed cost of test selection; the log shows how long it took.
 - At the end the log shows how many mutants the selected tests detected, how many survived them without another run, and how many ran the whole suite.
 
@@ -200,6 +200,16 @@ A mutant can turn a loop into an endless one. Its test run is stopped after a ti
 Either is at least `--minimum-timeout` seconds. The default minimum is 30. When the test bundles of a Swift package are started directly it is 5, because such a run has almost no fixed cost and fails as quickly as it passes. A failing `xcodebuild` run can take much longer than a passing one (see `-collect-test-diagnostics` above), so custom mode keeps 30.
 
 A timeout that is too short makes a mutant that would survive look detected. On a loaded machine, or with many `--jobs`, raise `--timeout-factor` or `--minimum-timeout`.
+
+### Later runs in the same work directory
+
+For a Swift package, a run leaves what it found out in `<work dir>/cache.json`, and the next run in the same work directory does not ask again:
+
+- The copy is not built when updating it changed nothing since the last build that succeeded. A package with a dependency that is a directory on your machine is always built, because that directory can change without the copy changing.
+- The baseline is a run of the test bundles started directly, without `swift test`, once a run has checked that starting them directly executes the tests of `swift test`. If that baseline fails, `swift test` runs it again and the check is repeated.
+- `swift package describe` and `swift build --show-bin-path` are not asked again.
+
+Each of these holds only while the toolchain is the same; the package description also depends on the manifest, the environment and the files in the targets' directories. To make a run start from scratch, delete `cache.json` or the whole work directory.
 
 ### In CI
 
