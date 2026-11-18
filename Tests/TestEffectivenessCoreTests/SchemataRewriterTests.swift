@@ -164,7 +164,12 @@ struct SchemataRewriterTests {
             methods: MethodDiscovery.discover(source: "func f() {}", relativePath: "f.swift").map { ($0, [Mutant(id: 9, mutation: .emptyBody)]) }
         )
         #expect(output.contains("getenv(\"STE_MUTANT\")"))
-        #expect(output.contains("fileprivate let __steActiveMutant"))
+        // Read through a pointer: to the file's own value, or to the one a resident test host
+        // names and changes between runs.
+        #expect(output.contains("fileprivate var __steActiveMutant: Int { __steSwitch.pointee }"))
+        #expect(output.contains("getenv(\"STE_SWITCH\")"))
+        // Only the process the address belongs to reads it.
+        #expect(output.contains("Int32(parts[0]) == getpid()"))
     }
 
     /// While recording, no mutant is active, and each method has a flag at the offset of its
@@ -179,7 +184,7 @@ struct SchemataRewriterTests {
         #expect(output.contains("case -2: __steReached(7)"))
         #expect(output.contains("case -2: __steReached(9)"))
         #expect(output.contains("getenv(\"STE_REACHED\")"))
-        #expect(output.contains("if __steReachedFile >= 0 { return -2 }"))
+        #expect(output.contains("if __steReachedFile >= 0 {\n        own.initialize(to: -2)"))
         #expect(output.contains("allocate(capacity: 3)"))
         #expect(output.contains("__steReachedFlags + (id - 7)"))
         #expect(output.contains("let line = Array(\"\\(id)\\n\".utf8)"))

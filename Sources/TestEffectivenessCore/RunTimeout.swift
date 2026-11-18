@@ -13,6 +13,17 @@ struct RunTimeout: Equatable, Sendable {
     /// `xcodebuild` run can take much longer, e.g. to collect diagnostics.)
     static let defaultMinimumForDirectLaunch = 5.0
 
+    /// The floor in a resident host, where a run has no process to start and so less noise. What
+    /// takes longer there is stopped and gets a process of its own, with the usual timeout, so a
+    /// short floor only costs time when it is too short; a long one makes an endless loop wait
+    /// for the timeout twice.
+    static let minimumInResidentHost = 1.0
+    /// A run that is expected to take longer than this, in seconds, is not for a resident host.
+    /// The host saves the start of a process, a tenth of a second or so; when it cannot decide a
+    /// run (the mutant survives, the run times out), the run takes place twice, and for long
+    /// tests that costs more than starting processes does.
+    static let longestRunInResidentHost = 0.3
+
     var factor: Double
     var minimum: Double
     /// The duration of the baseline, a run of the whole suite.
@@ -20,6 +31,25 @@ struct RunTimeout: Equatable, Sendable {
 
     /// For a run of the whole suite.
     var wholeSuite: Double { max(baseline * factor, minimum) }
+
+    /// For a run in a resident host that is expected to take `expected` seconds there, or `nil`
+    /// when the run is too long for one or its duration is unknown.
+    func inResidentHost(expected: Double?) -> Double? {
+        guard let expected, expected <= Self.longestRunInResidentHost else { return nil }
+        return max(expected * factor, min(minimum, Self.minimumInResidentHost))
+    }
+
+    /// What a run of scopes that took `aloneDurations` when each ran alone is expected to take
+    /// without what each of those runs cost besides its tests (`overhead`: starting a process).
+    /// `nil` when a duration is unknown.
+    static func expected(aloneDurations: [Double?], overhead: Double) -> Double? {
+        var expected = 0.0
+        for duration in aloneDurations {
+            guard let duration else { return nil }
+            expected += max(0, duration - overhead)
+        }
+        return expected
+    }
 
     /// For a run of test scopes that took `aloneDurations` when each ran alone. Never more than
     /// for the whole suite, and that of the whole suite when a duration is unknown.

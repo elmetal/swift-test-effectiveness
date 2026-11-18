@@ -14,7 +14,7 @@ struct IntegrationTests {
 
     private func analyze(
         _ fixture: String, throwMutants: Bool = false, caseMutants: Bool = false, testSelection: Bool = true,
-        jobs: Int = 1, directLaunch: Bool = true, rerunSurvivors: Bool = false,
+        jobs: Int = 1, directLaunch: Bool = true, rerunSurvivors: Bool = false, residentHost: Bool = true,
         minimumTimeout: Double? = 120, workDirectory: URL? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) throws -> AnalysisReport {
@@ -29,7 +29,8 @@ struct IntegrationTests {
             testSelection: testSelection,
             jobs: jobs,
             directLaunch: directLaunch,
-            rerunSurvivors: rerunSurvivors
+            rerunSurvivors: rerunSurvivors,
+            residentHost: residentHost
         )
         return try Analyzer(configuration: configuration, log: log).run()
     }
@@ -71,6 +72,71 @@ struct IntegrationTests {
         #expect(!thirdMessages.all.contains(notBuilding))
         #expect(thirdMessages.all.contains { $0.hasPrefix(directBaseline) })
         #expect(summary(third) == summary(first))
+    }
+
+    /// The numbers of the log line about the kept test processes: runs that found their mutant
+    /// detected there, and those left to processes of their own, by what the kept process said.
+    private func keptProcesses(_ messages: Messages) throws -> (detected: Int, passed: Int, timedOut: Int, ended: Int, failedAgain: Int) {
+        let line = try #require(messages.all.first { $0.hasPrefix("Kept test processes:") })
+        let match = try #require(line.firstMatch(
+            of: #/: (\d+) runs found .* \((\d+) passed there, (\d+) timed out, (\d+) ended the process, (\d+) failed again/#
+        ))
+        return (Int(match.1)!, Int(match.2)!, Int(match.3)!, Int(match.4)!, Int(match.5)!)
+    }
+
+    /// A process that runs the tests of one mutant after the other gives the outcomes of a
+    /// process for every run: with Swift Testing tests (SampleProject), XCTest tests
+    /// (ReferencedProject, OrderDependentProject) and mutants of cases (SwitchProject).
+    @Test(arguments: ["SampleProject", "ReferencedProject", "OrderDependentProject", "SwitchProject"])
+    func keptTestProcessesKeepOutcomes(fixture: String) throws {
+        func summary(_ report: AnalysisReport) -> [String] {
+            report.methods.map { method in
+                "\(method.method.name) \(method.classification) \(method.executed) \(method.mutants.map(\.outcome)) "
+                    + "\((method.cases ?? []).map { "\($0.label) \($0.mutants.map(\.outcome))" })"
+            }
+        }
+        let messages = Messages()
+        let kept = try analyze(fixture, caseMutants: true, jobs: 2) { messages.append($0) }
+        #expect(messages.all.contains { $0.hasPrefix("Keeping a test process per worker and test bundle") })
+        #expect(try keptProcesses(messages).detected > 0)
+
+        let perRunMessages = Messages()
+        let perRun = try analyze(fixture, caseMutants: true, jobs: 2, residentHost: false) { perRunMessages.append($0) }
+        #expect(!perRunMessages.all.contains { $0.contains("test process") })
+        #expect(summary(kept) == summary(perRun))
+        #expect(kept.testsFailingAlone?.map(\.test) == perRun.testsFailingAlone?.map(\.test))
+    }
+
+    /// `Tests/Fixtures/SharedStateProject`: state that outlives a test. A kept process says that
+    /// a mutant is detected only when a test fails with it and passes again without it; the rest
+    /// is left to a process of its own, so the outcomes are those of a process for every run.
+    ///
+    /// - `Phrase.makeSeparator()` is only called when `Phrase.separator` is first read, which the
+    ///   mutants of `Phrase.join(_:)` made the kept process do: its mutants pass there.
+    /// - `invitedGuestIsOnTheList()` passes once in a process, so once the kept process has run
+    ///   it, it fails there again without the mutant.
+    @Test func keptTestProcessesLeaveWhatSharedStateDecidesToAProcessOfItsOwn() throws {
+        let messages = Messages()
+        let kept = try analyze("SharedStateProject") { messages.append($0) }
+        let outcomes = Dictionary(uniqueKeysWithValues: kept.methods.map { ($0.method.name, $0.mutants.map(\.outcome)) })
+        #expect(outcomes == [
+            "Phrase.join(_:)": [.killed, .killed],
+            "Phrase.makeSeparator()": [.killed, .killed],
+            "Guests.invite(_:)": [.killed],
+            "Guests.isInvited(_:)": [.survived, .killed],
+            "Guests.count": [.killed, .survived],
+        ])
+        let numbers = try keptProcesses(messages)
+        // Both mutants of `join` and the one of `invite`.
+        #expect(numbers.detected == 3)
+        // Both mutants of `makeSeparator`, and the one of `count` that survives.
+        #expect(numbers.passed == 3)
+        // Both mutants of `isInvited`, and the other one of `count`.
+        #expect(numbers.failedAgain == 3)
+        #expect(numbers.timedOut == 0 && numbers.ended == 0)
+
+        let perRun = try analyze("SharedStateProject", residentHost: false)
+        #expect(Dictionary(uniqueKeysWithValues: perRun.methods.map { ($0.method.name, $0.mutants.map(\.outcome)) }) == outcomes)
     }
 
     /// `Tests/Fixtures/HangingProject`: with `isDone` returning `false`, `count()` loops for ever.
