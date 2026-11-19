@@ -27,6 +27,9 @@ public struct DiscoveredCase: Sendable {
     /// What the case executes as the `otherCase` mutant: `fallthrough`, or the statements (in a
     /// switch expression, the expression) of the other case.
     var otherCaseStatement: String?
+    /// For the expression of each `resultOnly` mutation: the UTF-8 offsets of the `return`s of the
+    /// case that it replaces (see `ResultMutants`).
+    var resultSites: [String: [Int]] = [:]
 }
 
 enum SwitchCases {
@@ -41,9 +44,11 @@ enum SwitchCases {
     ///   - mutations: the mutations of the method (see `MutationOperators`); empty when its return
     ///     type has no simplest value, and each case then does what another case does.
     ///   - line: the line of a position in the file.
+    ///   - resultMutants: also replace only what a case returns, where the case does something
+    ///     before it returns (see `ResultMutants`).
     static func discover(
         _ statements: CodeBlockItemListSyntax, mutations: [ExtremeMutation], arid: AridDetector?,
-        line: (AbsolutePosition) -> Int
+        resultMutants: Bool = false, line: (AbsolutePosition) -> Int
     ) -> [DiscoveredCase] {
         guard let last = statements.last, let switchExpr = expression(of: last)?.as(SwitchExprSyntax.self) else {
             return []
@@ -98,6 +103,12 @@ enum SwitchCases {
             }
             if isThrow {
                 discovered.mutations.removeAll { $0 == .throwError }
+            }
+            // A case of a switch expression is one expression: nothing stands before its value.
+            if resultMutants, !isExpression {
+                let results = ResultMutants.discover(items, mutations: discovered.mutations, arid: arid)
+                discovered.mutations += results.mutations
+                discovered.resultSites = results.sites
             }
             result.append(discovered)
             bodies.append(Body(switchCase))
@@ -256,7 +267,7 @@ enum SwitchCases {
             return value.trimmedDescription == "Data()"
         case .returnValue(let expression):
             return DefaultValues.tokens(of: expression) == value.tokens(viewMode: .sourceAccurate).map(\.text)
-        case .emptyBody, .emptyView, .throwError, .otherCase:
+        case .emptyBody, .emptyView, .throwError, .otherCase, .resultOnly:
             return false
         }
     }

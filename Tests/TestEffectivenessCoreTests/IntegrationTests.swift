@@ -14,6 +14,7 @@ struct IntegrationTests {
 
     private func analyze(
         _ fixture: String, throwMutants: Bool = false, caseMutants: Bool = false, defaultValues: [String] = [], closures: [String] = [],
+        returnMutants: Bool = false,
         testSelection: Bool = true,
         jobs: Int = 1, directLaunch: Bool = true, rerunSurvivors: Bool = false, residentHost: Bool = true,
         minimumTimeout: Double? = 120, workDirectory: URL? = nil,
@@ -27,7 +28,8 @@ struct IntegrationTests {
             buildSystem: .swiftPM(swiftExecutable: Self.swift, targets: [], testFilter: nil),
             discovery: DiscoveryOptions(
                 includeThrowMutants: throwMutants, caseMutants: caseMutants,
-                defaultValues: try DefaultValues(parsing: defaultValues), closures: try ClosureUnits(parsing: closures)
+                defaultValues: try DefaultValues(parsing: defaultValues), closures: try ClosureUnits(parsing: closures),
+                returnMutants: returnMutants
             ),
             minimumTimeout: minimumTimeout,
             testSelection: testSelection,
@@ -430,20 +432,75 @@ struct IntegrationTests {
         ])
     }
 
+    /// `Tests/Fixtures/ClosureProject`: where a body changes state and then returns a value, a test
+    /// of the state detects the mutant that leaves at the start, whatever becomes of the value.
+    @Test func returnMutantsFindTheResultsNoTestChecks() throws {
+        let report = try analyze(
+            "ClosureProject", caseMutants: true, defaultValues: ["Command=.none"], closures: ["Handler=Command"],
+            returnMutants: true
+        )
+        func outcomes(_ mutants: [MutantResult]) -> String {
+            mutants.map { "\($0.mutant.mutation.summary) \($0.outcome.rawValue)" }.joined(separator: ", ")
+        }
+        func cases(_ name: String) -> [String] {
+            (report.methods.first { $0.method.name == name }?.cases ?? []).map { "\($0.label): \(outcomes($0.mutants))" }
+        }
+        #expect(cases("Outbox.handler, Handler { }") == [
+            // The state and the command are asserted.
+            "case .received: `return .none` killed, `return .none` after its statements killed",
+            // Only the state is: the case can return anything.
+            "case .opened: `return .none` killed, `return .none` after its statements survived",
+            // Nothing is.
+            "case .refreshed: `return .none` survived, `return .none` after its statements survived",
+        ])
+        #expect(cases("Inbox.handler, Handler { }") == [
+            // Returns the value already: nothing to replace.
+            "case .received: `return .none` killed",
+            "case .opened: `return .none` survived, `return .none` after its statements survived",
+            "case .muted: `return .none` notRun, `return .none` after its statements notRun",
+            // Does nothing before it returns.
+            "case .refreshed: `return .none` killed",
+        ])
+
+        // A method: the state is asserted, the result never.
+        let send = try #require(report.methods.first { $0.method.name == "Outbox.send(_:in:)" })
+        #expect(outcomes(send.mutants) == "`return true` killed, `return false` killed, "
+            + "`return true` after its statements survived, `return false` after its statements survived")
+        #expect(send.classification == .partiallyTested)
+
+        let text = try Reporter.render(report, format: .text)
+        #expect(text.contains("→ In `case .opened` (line 188), `Outbox.handler, Handler { }` can `return .none` after the "
+            + "statements of the case without any test failing: tests check what the case changes, not what it returns. "
+            + "Assert the result."))
+        // Where leaving at the start survived as well, that is what is said.
+        #expect(text.contains("→ In `case .refreshed` (line 191), `Outbox.handler, Handler { }` can `return .none` "
+            + "without any test failing."))
+        #expect(text.contains("→ `Outbox.send(_:in:)` can do what it does and then return `false` without any test failing: "
+            + "tests check what it changes, not what it returns. Assert the value it returns."))
+
+        // Without the option, the same run finds nothing in these two.
+        let without = try analyze(
+            "ClosureProject", caseMutants: true, defaultValues: ["Command=.none"], closures: ["Handler=Command"]
+        )
+        #expect(without.methods.first { $0.method.name == "Outbox.send(_:in:)" }?.classification == .tested)
+        #expect(without.methods.first { $0.method.name == "Outbox.handler, Handler { }" }?.cases?
+            .first { $0.label == "case .opened" }?.isVerified == true)
+    }
+
     /// `Tests/Fixtures/ClosureProject`: logic written as closures. The methods that make them have
     /// no mutant, so nothing is found until the closures are methods of their own.
     @Test func closuresOfNamedCallsAreAnalyzedLikeMethods() throws {
         let unnamed = try analyze("ClosureProject", caseMutants: true)
         #expect(unnamed.methods.map(\.method.name) == [
-            "Feed.subscribe(_:)", "Feed.post(_:)", "Recorder.record(_:)", "Recorder.mute(_:)",
+            "Feed.subscribe(_:)", "Feed.post(_:)", "Recorder.record(_:)", "Recorder.mute(_:)", "Outbox.send(_:in:)",
         ])
         #expect(unnamed.methods.allSatisfy { $0.classification == .tested })
         #expect(unnamed.skipped.map(\.method.name) == [
             "Inbox.handler", "Archive.handler()", "Archive.refreshing", "Rules.positive", "Rules.all(_:)",
-            "Archive.count(of:)", "Archive.idle", "Recorder.reset()",
+            "Archive.count(of:)", "Archive.idle", "Recorder.reset()", "Outbox.handler",
         ])
         // An empty body has no mutant a test could detect.
-        #expect(unnamed.skipped.last?.reason == "body does nothing, like its mutant")
+        #expect(unnamed.skipped.first { $0.method.name == "Recorder.reset()" }?.reason == "body does nothing, like its mutant")
 
         let report = try analyze(
             "ClosureProject", caseMutants: true, defaultValues: ["Command=.none"],
@@ -459,7 +516,7 @@ struct IntegrationTests {
         ])
         // They only make the closures, so no value for their types is asked for.
         #expect(Reporter.defaultValueHint(unnamed.skipped, analyzed: unnamed.methods.map(\.method))?.hasSuffix(
-            ": `Handler` (4 methods), `Rule` (2 methods) and `Job` (1 method)."
+            ": `Handler` (5 methods), `Rule` (2 methods) and `Job` (1 method)."
         ) == true)
         #expect(Reporter.defaultValueHint(report.skipped, analyzed: report.methods.map(\.method)) == nil)
         let closures = report.methods.filter { $0.method.kind == .closure }
@@ -482,6 +539,8 @@ struct IntegrationTests {
             "Rules.all(_:), allSatisfy { } (127): tested `return true` killed,`return false` killed",
             // `async throws`.
             "Archive.count(of:), Job { } (143): tested `return 0` killed,`return 1` killed",
+            // `.refreshed` runs without an assertion.
+            "Outbox.handler, Handler { } (183): partially-tested `return .none` killed",
         ])
         // Whether tests execute a closure is known for the closure itself. No test can refer to it.
         #expect(closures.allSatisfy { $0.referenced == .unknown && $0.executed == .executed })

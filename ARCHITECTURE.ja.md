@@ -21,7 +21,7 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 | # | ステージ | 種類 | ファイル |
 |---|---|---|---|
 | 1 | ソースファイルを列挙する。`swift package describe` のテスト以外のターゲット、またはカスタムモードでは `--source-dir`。`--exclude` を適用する | 共通 | `Analyzer.swift` |
-| 2 | SwiftSyntax で宣言を発見し、各層がそれをどう解析するか（または対象外の理由）を決める。本体がログ出力だけの宣言もここで対象外にする（`AridDetection.swift`）。`--since` 指定時は、変更行と重なる宣言だけを残す | 共通 | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `ClosureUnits.swift`, `AridDetection.swift`, `GitDiff.swift` |
+| 2 | SwiftSyntax で宣言を発見し、各層がそれをどう解析するか（または対象外の理由）を決める。本体がログ出力だけの宣言もここで対象外にする（`AridDetection.swift`）。`--since` 指定時は、変更行と重なる宣言だけを残す | 共通 | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `ClosureUnits.swift`, `ResultMutants.swift`, `AridDetection.swift`, `GitDiff.swift` |
 | 3 | プロジェクトを `<package>/.build/test-effectiveness/project` にコピーし、必要な層のためにコピーを準備する | 共通 | `Analyzer.swift`, `SchemataRewriter.swift` |
 | 4 | **1 回だけ** ビルドする（`swift build --build-tests --enable-index-store`、またはカスタムのビルドコマンド）。Swift パッケージでは、前回のビルドからコピーが変わっていなければビルドしない | 共通 | `Analyzer.swift`, `RunCache.swift` |
 | 5 | 静的参照層：ビルドが書き出したインデックスを読み、referenced 列を埋める | 層 | `References.swift` |
@@ -230,6 +230,23 @@ var handler: Handler<State, Event> {
 - **実行はクロージャ自身のものを使う。** switch が、クロージャが実行されたことを記録する。カスタムモードでは、llvm-cov がクロージャを 1 つの関数として扱い、その領域はクロージャの `{` から始まる（`MethodInfo.bodyStart`）。
 - **インデックスが知っているのは、クロージャを囲むメソッドである。** インデックスにはクロージャのシンボルがないので、クロージャの参照の列は `unknown` になる。`DiscoveredMethod.indexed` は、クロージャが書かれているメソッドである。クロージャがコンパイルされたかどうかは、そのメソッドがコンパイルされたかどうかで判断する。ビルドが何も記録しなかったときは、そのメソッドのテストを選ぶ。
 
+#### 戻り値のミュータント
+
+`--return-mutants` を指定すると、`ResultMutants` が本体の中の `return` と、それ以外に何かをする文を探します。どの本体が対象になるかは [本体が返す値](docs/ja/methods/extreme-mutation.md#本体が返す値) を参照してください。戻り値型の値ごとに、本体に `resultOnly` のミューテーションを足し、その値と違うものを返す `return` のオフセットを `DiscoveredMethod.resultSites` に持ちます。ほかのミュータントと同じメソッドのミュータントなので、ID の割り当て、実行、分類は同じ経路を通ります。
+
+```swift
+mutating func withdraw(_ amount: Int) -> Bool { switch __steActiveMutant { case 1: return true; case 2: return false; case -2: __steReached(1); default: break };
+    if amount > balance { if __steActiveMutant == 3 { return true }; return false }
+    balance -= amount
+    if __steActiveMutant == 4 { return false }; return true
+}
+```
+
+- **各 `return` の前に文を 1 つ置く。** 本体から抜けるミュータントは、先頭の switch に置く。`resultOnly` のミュータントは、値を返す場所に置く。`return` は必ずブロックの中の文なので、同じ行のその前に文を足しても、どこでも構文として正しい。
+- **このミュータントだけになることはない。** 対象になる本体は `return` 1 つだけではないので、先頭で抜けるミュータントも必ずある。メソッドが実行されたことを記録するのは先頭の switch で、テストの選択も最初のミュータントで決まる。
+- **case のミュータントがあるときは、case に置く。** `SwitchCases` が、case ごとの文について `ResultMutants` を呼び、オフセットを `DiscoveredCase.resultSites` に持つ。こうしたメソッドの本体には `resultOnly` を足さない。すべての `return` をまとめて置き換えても、case ごとの結果より分かることが少ないためである。
+- **レポートには、生存を 1 回だけ書く。** 先頭で抜けるミュータントが同じ値で生存しているとき、`Reporter.advised` は `resultOnly` の生存を助言から外す。JSON レポートには両方が入る。
+
 ## テスト
 
 - ユニットテストは、宣言の発見、ミューテーション演算子、書き換え、分類、レポートを対象にする。
@@ -239,7 +256,7 @@ var handler: Handler<State, Event> {
 - `Tests/Fixtures/OrderDependentProject` は、ほかのテストが先に流れたときだけ通るテストスコープを持つパッケージ。統合テストで、それが *Tests that fail alone* として報告され、テスト選択に使われないことを確認する。
 - `Tests/Fixtures/SharedStateProject` は、テストをまたいで残る状態を持つパッケージ。一度だけ計算される値と、1 つのプロセスで 1 回しか通らないテストがある。統合テストで、その影響を受けるミュータントを常駐ホストが専用のプロセスに任せることと、結果が実行のたびにプロセスを起動した場合と同じになることを確認する。
 - `Tests/Fixtures/SwitchProject` は、ロジックが switch になっているメソッドを集めたパッケージ。どれも本体全体のミュータントでは `tested` になるか、解析対象外になる。統合テストで、`--case-mutants` がどの case を報告するかを検証する。
-- `Tests/Fixtures/ClosureProject` は、ロジックがクロージャとして書かれているパッケージ。クロージャを作るメソッド自体は解析対象外になる。統合テストで、`--closure` がクロージャとその switch の case について何を報告するかを検証する。
+- `Tests/Fixtures/ClosureProject` は、ロジックがクロージャとして書かれているパッケージ。クロージャを作るメソッド自体は解析対象外になる。統合テストで、`--closure` がクロージャとその switch の case について何を報告するか、また、状態を変えて値を返すハンドラとメソッドについて `--return-mutants` が何を報告するかを検証する。
 - `Tests/Fixtures/EdgeCases` は、if/switch 式、result builder、result builder 外の `some View`、`throws`、actor、`defaultIsolation(MainActor)` など、書き換え後もコンパイルできなければならない構文の集まり。書き換え処理を変更するときはここにケースを足す。
 
 ## 手法を追加するとき

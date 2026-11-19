@@ -239,6 +239,59 @@ Partially tested (1)
 - The mutants are statements at the start of the closure, so a closure of one expression becomes one of several statements. Its type then has to be known from the call, not from its body, and a closure that a result builder transforms (`VStack { … }`) must not be named. If the schema does not build, the analysis stops: run without that name.
 - Every call with the name is taken, whatever it calls: a name that two functions share needs more components, or cannot be used.
 
+## What a body returns
+
+Off by default; enable with `--return-mutants`.
+
+An extreme mutant leaves a body at its start, so what the body does goes with what it returns. A test that asserts either detects the mutant:
+
+```swift
+mutating func withdraw(_ amount: Int) -> Bool {
+    if amount > balance { return false }
+    balance -= amount
+    return true
+}
+```
+
+A test that only asserts `balance` detects both `return true` and `return false`, and the method is `tested`, although nothing checks what it returns. With `--return-mutants`, a body that does something before it returns gets one more mutant for each value of its return type: the statements stay, and every `return` gives the value instead of its own.
+
+```
+Sources/Closures/Closures.swift:201  Outbox.send(_:in:) -> Bool
+    survived: `return true` after its statements, `return false` after its statements
+    detected: `return true`, `return false`
+    → `Outbox.send(_:in:)` can do what it does and then return `false` without any test failing: tests check what it changes, not what it returns. Assert the value it returns.
+```
+
+A body gets such a mutant only where it would differ from the mutant that leaves at the start:
+
+| Body | Mutant |
+|---|---|
+| does something and returns something else than the value (`balance -= amount; return true`) | yes: `return false` after its statements |
+| every `return` gives the value already (`count += 1; return .none`) | none: nothing would change |
+| only computes what it returns (`guard x > 0 else { return nil }; return x`, `let y = x * 2; return y`) | none: leaving at the start does the same |
+| is one expression | none, likewise |
+| returns nothing, or a type without a simplest value | none: there is no value to return |
+
+- **What counts as doing something** is a statement that is an expression: an assignment or a call, also inside an `if`, a `guard`, a loop or a `defer`. A declaration alone does not count (`let id = next()`), and neither does a call that only logs ([arid](#arid-bodies)). What a closure or a local function in the body does and returns is its own.
+- **The value** is the one the mutants of the return type return: a row of the [table](#mutants-per-return-type) or the expression given with `--default-value`. `Bool`, numbers and strings have two, and get a mutant for each. A `return` that gives the value already is left as it is.
+- **The expression of a `return` is not evaluated** in the mutant: in `return save()`, `save()` is not called.
+- **With `--case-mutants`**, a method that ends with a switch gets these mutants case by case, not for its whole body: each case that does something before it returns. A case of a switch expression is one expression, and gets none.
+
+  ```
+  Sources/Closures/Closures.swift:183  Outbox.handler, Handler { } -> Command
+      detected: `return .none`
+      → In `case .opened` (line 188), `Outbox.handler, Handler { }` can `return .none` after the statements of the case without any test failing: tests check what the case changes, not what it returns. Assert the result.
+  ```
+
+- **Results.** The mutants are mutants of the method, or of the case, like the others: one that survives makes the method `partially-tested`. Where the mutant that leaves at the start survived with the same value, the report says only that.
+
+### Limits of return mutants
+
+- Every body or case that qualifies costs one more run for each value, also where the mutant that leaves at the start survives and this one says nothing more.
+- Whether a body does something is decided on the syntax. A side effect in a declaration (`let id = generator.next()`) or in a condition (`if queue.removeFirst() == x`) is not seen, and such a body gets no mutant.
+- With `--case-mutants`, a `return` in front of the switch (`guard isEnabled else { return .none }`) belongs to no case and is not replaced.
+- Methods returning `some View` and result builders get none.
+
 ## Not targeted
 
 | Declaration | Reason |
@@ -280,6 +333,7 @@ The check is syntactic, so the receiver's type is not known: `logger.info(…)` 
 - Extreme mutation checks whether a method is verified *at all*, not whether it is verified *well*. `tested` is not a quality guarantee; it means there is no obvious hole. Use traditional mutation testing for finer-grained checks.
 - Methods with unsupported return types cannot be analysed (see [Not targeted](#not-targeted)), except with a value from `--default-value`, or case by case when they end with a switch (see [Cases of a switch](#cases-of-a-switch)).
 - Logic written as closures is not analysed, except the closures of the calls `--closure` names (see [Closures](#closures)).
+- A test of what a method changes detects every mutant of its whole body, whatever the method returns. Without `--return-mutants`, such a method is `tested` although no test checks its result (see [What a body returns](#what-a-body-returns)).
 - One test of one case of a switch detects every mutant of the whole body. Without `--case-mutants`, such a method is `tested` however few of its cases the tests check.
 
 ## Implementation

@@ -26,6 +26,9 @@ public struct DiscoveredMethod: Sendable {
     public var cases: [DiscoveredCase] = []
     /// For a closure (see `ClosureUnits`): the method whose body it is written in.
     var enclosing: MethodInfo?
+    /// For the expression of each `resultOnly` mutation: the UTF-8 offsets of the `return`s of the
+    /// body that it replaces (see `ResultMutants`).
+    var resultSites: [String: [Int]] = [:]
 
     /// The declaration the index knows: a closure has no symbol of its own. It is compiled when
     /// the method around it is, and the tests that reach that method are the ones that may run it.
@@ -67,14 +70,19 @@ public struct DiscoveryOptions: Sendable {
     public var defaultValues: DefaultValues
     /// The closures to analyze like methods, for the calls the user named.
     public var closures: ClosureUnits
+    /// Also replace only what a body returns, where it does something before it returns (see
+    /// `ResultMutants`).
+    public var returnMutants: Bool
 
     public init(
         includeThrowMutants: Bool = false, arid: AridDetector? = AridDetector(), caseMutants: Bool = false,
-        defaultValues: DefaultValues = DefaultValues(), closures: ClosureUnits = ClosureUnits()
+        defaultValues: DefaultValues = DefaultValues(), closures: ClosureUnits = ClosureUnits(),
+        returnMutants: Bool = false
     ) {
         self.includeThrowMutants = includeThrowMutants
         self.arid = arid
         self.caseMutants = caseMutants
+        self.returnMutants = returnMutants
         self.defaultValues = defaultValues
         self.closures = closures
     }
@@ -326,7 +334,10 @@ public enum MethodDiscovery {
             if options.caseMutants, !isResultBuilder, opaqueBody == nil {
                 let line = { [converter] (position: AbsolutePosition) in converter.location(for: position).line }
                 if case .mutate(let mutations) = decision {
-                    cases = SwitchCases.discover(statements, mutations: mutations, arid: options.arid, line: line)
+                    cases = SwitchCases.discover(
+                        statements, mutations: mutations, arid: options.arid, resultMutants: options.returnMutants,
+                        line: line
+                    )
                 } else if case .skip(let reason) = decision, reason.hasPrefix(MutationOperators.unsupportedReturnType),
                           // Statements in a case would be as wrong as in front of the body.
                           implicitReturns != nil,
@@ -337,6 +348,16 @@ public enum MethodDiscovery {
                     cases = SwitchCases.discover(statements, mutations: [], arid: options.arid, line: line)
                     if !cases.isEmpty { decision = .mutate([]) }
                 }
+            }
+
+            // Where the cases are mutated one by one, what each returns is replaced there: all of
+            // them at once would say less.
+            var resultSites: [String: [Int]] = [:]
+            if options.returnMutants, cases.isEmpty, !isResultBuilder, opaqueBody == nil,
+               case .mutate(let mutations) = decision {
+                let results = ResultMutants.discover(statements, mutations: mutations, arid: options.arid)
+                decision = .mutate(mutations + results.mutations)
+                resultSites = results.sites
             }
 
             methods.append(DiscoveredMethod(
@@ -350,7 +371,8 @@ public enum MethodDiscovery {
                 opaqueBody: opaqueBody,
                 isConditionallyCompiled: ifConfigDepth > 0 || closure?.isConditionallyCompiled == true,
                 cases: cases,
-                enclosing: closure?.enclosing
+                enclosing: closure?.enclosing,
+                resultSites: resultSites
             ))
 
             // The closures of the body that are methods of their own. Those of a closure are

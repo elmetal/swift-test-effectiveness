@@ -70,3 +70,27 @@ import Testing
     feed.post("b")
     recorder.reset()
 }
+
+@Test func outboxSavesWhatItReceives() {
+    var state = Outbox.State()
+    #expect(Outbox().handler.handle(&state, .received) == .save)
+    #expect(state.sent == 1)
+}
+
+@Test func outboxCountsWhatFailsToOpen() {
+    var state = Outbox.State()
+    _ = Outbox().handler.handle(&state, .opened)
+    #expect(state.failed == 1)
+}
+
+@Test func outboxRefreshes() {
+    var state = Outbox.State()
+    _ = Outbox().handler.handle(&state, .refreshed)
+}
+
+@Test func outboxSendsWhatItIsGiven() {
+    var state = Outbox.State()
+    _ = Outbox().send(2, in: &state)
+    _ = Outbox().send(0, in: &state)
+    #expect(state.sent == 2)
+}

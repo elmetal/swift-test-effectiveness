@@ -108,6 +108,7 @@ Options for a specific method:
 | `--coverage-binary <path>` | coverage | Custom mode: a binary built with coverage, or a directory to search for binaries (repeatable) |
 | `--throw-mutants` | extreme mutation | Add a `throw` mutant for methods declared with untyped `throws` |
 | `--case-mutants` | extreme mutation | Also mutate each case of the switch a method ends with, to find the cases no test verifies; this also analyses such methods when they return an enum or another type without a default value (see [Cases of a switch](docs/methods/extreme-mutation.md#cases-of-a-switch)) |
+| `--return-mutants` | extreme mutation | Also replace only what a method returns, where it does something before it returns: the statements run, and each `return` gives the simplest value. Finds the results no test checks in methods whose side effects are tested; with `--case-mutants`, case by case (see [What a body returns](docs/methods/extreme-mutation.md#what-a-body-returns)) |
 | `--closure <name>=<type>` | extreme mutation | Also analyse the trailing closure of calls to this function like a method that returns this type, e.g. `'Handler=Command'`, for logic that is written as closures (repeatable; see [Closures](docs/methods/extreme-mutation.md#closures)) |
 | `--default-value <type>=<expression>` | extreme mutation | Return this expression as the mutant of methods with this return type, e.g. `'Money=.zero'`, for the types the built-in rules have no value for (repeatable; see [Values for other return types](docs/methods/extreme-mutation.md#values-for-other-return-types)) |
 | `--no-arid` | extreme mutation | Also mutate methods returning `Void` whose body only logs (skipped by default, see [Not targeted](docs/methods/extreme-mutation.md#not-targeted)) |
@@ -121,7 +122,7 @@ Options for a specific method:
 
 Exit status: `0` success, `1` pseudo-tested methods found with `--fail-on-pseudo-tested`, `2` analysis error (build failure, failing baseline, …), `128 + signal` when interrupted (`130` for Ctrl-C). On interruption the running build or test command is stopped as well.
 
-The JSON report starts with `schemaVersion` and `toolVersion`. `schemaVersion` is incremented when a field is removed, renamed or changes meaning; new fields may be added without changing it, so ignore keys you do not know. `testsFailingAlone` lists the [tests that fail alone](#reading-the-report) (`test`, `timedOut`, `log`); it is absent when the check did not run. With `--case-mutants`, a method whose cases were run has `cases` (`label`, `line`, `executed`, `mutants` for each case with mutants). With `--closure`, the `kind` of a closure is `closure`.
+The JSON report starts with `schemaVersion` and `toolVersion`. `schemaVersion` is incremented when a field is removed, renamed or changes meaning; new fields may be added without changing it, so ignore keys you do not know. `testsFailingAlone` lists the [tests that fail alone](#reading-the-report) (`test`, `timedOut`, `log`); it is absent when the check did not run. With `--case-mutants`, a method whose cases were run has `cases` (`label`, `line`, `executed`, `mutants` for each case with mutants). With `--closure`, the `kind` of a closure is `closure`. With `--return-mutants`, the `mutation` of a mutant can be `resultOnly`.
 
 ### Xcode and other projects (custom mode)
 

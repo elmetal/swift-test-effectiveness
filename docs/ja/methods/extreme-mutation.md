@@ -239,6 +239,59 @@ Partially tested (1)
 - ミュータントはクロージャの先頭に入る文なので、式 1 つのクロージャは複数の文のクロージャになる。このとき、クロージャの型は本体からではなく、呼び出しから決まっている必要がある。result builder が変換するクロージャ（`VStack { … }`）は指定できない。スキーマがビルドできないと解析は止まるので、その名前を外して実行する。
 - その名前の呼び出しは、何を呼んでいてもすべて対象になる。2 つの関数が同じ名前のときは、名前の要素を増やして区別する。区別できなければ指定できない。
 
+## 本体が返す値
+
+既定ではオフです。`--return-mutants` で有効になります。
+
+極端ミューテーションのミュータントは本体の先頭で抜けるので、本体がすることと返す値が、一緒に消えます。どちらか一方をアサートするテストがあれば、ミュータントは検出されます。
+
+```swift
+mutating func withdraw(_ amount: Int) -> Bool {
+    if amount > balance { return false }
+    balance -= amount
+    return true
+}
+```
+
+`balance` だけをアサートするテストでも、`return true` と `return false` の両方が検出されます。メソッドは `tested` になりますが、返す値は誰も確かめていません。`--return-mutants` を指定すると、値を返す前に何かをする本体に、戻り値型の値ごとにミュータントを 1 つ足します。文はそのまま実行し、すべての `return` が、元の値の代わりにその値を返します。
+
+```
+Sources/Closures/Closures.swift:201  Outbox.send(_:in:) -> Bool
+    survived: `return true` after its statements, `return false` after its statements
+    detected: `return true`, `return false`
+    → `Outbox.send(_:in:)` can do what it does and then return `false` without any test failing: tests check what it changes, not what it returns. Assert the value it returns.
+```
+
+このミュータントを入れるのは、先頭で抜けるミュータントと違う結果になる本体だけです。
+
+| 本体 | ミュータント |
+|---|---|
+| 何かをして、その値とは違うものを返す（`balance -= amount; return true`） | あり：文の後で `return false` |
+| どの `return` もすでにその値を返す（`count += 1; return .none`） | なし。何も変わらない |
+| 返す値を計算するだけ（`guard x > 0 else { return nil }; return x`、`let y = x * 2; return y`） | なし。先頭で抜けるのと同じになる |
+| 式 1 つ | なし。同上 |
+| 何も返さない、または最も単純な値がない型を返す | なし。返す値がない |
+
+- **「何かをする」の判定**：式になっている文（代入や呼び出し）があることです。`if`、`guard`、ループ、`defer` の中にあっても数えます。宣言だけの文（`let id = next()`）と、ログ出力だけの呼び出し（[arid](#arid-な本体)）は数えません。本体の中のクロージャやローカル関数がすることと返す値は、別のものとして扱います。
+- **値**：戻り値型のミュータントが返す値です。[表](#戻り値型ごとのミュータント) の行か、`--default-value` で指定した式です。`Bool`、数値、文字列には値が 2 つあり、それぞれにミュータントができます。すでにその値を返している `return` は変えません。
+- **`return` の式は評価しない**：ミュータントでは、`return save()` の `save()` は呼ばれません。
+- **`--case-mutants` と併用したとき**：末尾が switch のメソッドでは、本体全体ではなく case ごとに入れます。対象は、値を返す前に何かをする case です。switch 式の case は式 1 つなので、対象になりません。
+
+  ```
+  Sources/Closures/Closures.swift:183  Outbox.handler, Handler { } -> Command
+      detected: `return .none`
+      → In `case .opened` (line 188), `Outbox.handler, Handler { }` can `return .none` after the statements of the case without any test failing: tests check what the case changes, not what it returns. Assert the result.
+  ```
+
+- **結果の扱い**：ほかのミュータントと同じく、メソッドまたは case のミュータントです。生存すると、メソッドは `partially-tested` になります。先頭で抜けるミュータントが同じ値で生存しているときは、レポートにはそちらだけを書きます。
+
+### 戻り値のミュータントの限界
+
+- 対象になる本体や case ごとに、値 1 つにつき実行が 1 回増える。先頭で抜けるミュータントが生存していて、このミュータントから新しく分かることがないときも実行する。
+- 本体が何かをするかどうかは、構文だけで判定する。宣言の中の副作用（`let id = generator.next()`）や条件の中の副作用（`if queue.removeFirst() == x`）は見えないので、そうした本体にはミュータントが入らない。
+- `--case-mutants` と併用したとき、switch の前にある `return`（`guard isEnabled else { return .none }`）はどの case にも属さず、置き換えない。
+- `some View` を返すメソッドと result builder には入れない。
+
 ## 対象外
 
 | 対象 | 理由 |
@@ -280,6 +333,7 @@ Partially tested (1)
 - 極端ミューテーションは「メソッドが何かしら検証されているか」を見るだけで、検証が十分かは見ない。`tested` は品質の保証ではなく、「明白な穴がない」ことを意味する。詳細な検証は通常のミューテーションテストで行う。
 - 戻り値型がサポート外のメソッドは解析できない（[対象外](#対象外) を参照）。ただし `--default-value` で値を指定した型は解析できる。また、末尾が switch のメソッドは、case ごとになら解析できる（[switch の case](#switch-の-case) を参照）。
 - クロージャとして書かれたロジックは解析できない。ただし、`--closure` で指定した呼び出しのクロージャは解析できる（[クロージャ](#クロージャ) を参照）。
+- メソッドが変更するものをテストすれば、メソッドが何を返していても、本体全体のミュータントは全て検出される。`--return-mutants` を指定しないと、こうしたメソッドは、結果を確かめるテストがなくても `tested` になる（[本体が返す値](#本体が返す値) を参照）。
 - switch のどれか 1 つの case をテストすれば、本体全体のミュータントは全て検出される。`--case-mutants` を指定しないと、こうしたメソッドは、テストが確かめている case がどれだけ少なくても `tested` になる。
 
 ## 実装

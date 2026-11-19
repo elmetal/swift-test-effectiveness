@@ -72,6 +72,19 @@ public enum Reporter {
             "`\(method)` can always throw without any test failing. Assert that it succeeds for valid input."
         case .otherCase(let label):
             "`\(method)` can do what `\(label)` does without any test failing. Assert the result."
+        case .resultOnly(let expression):
+            "`\(method)` can do what it does and then return `\(expression)` without any test failing: "
+                + "tests check what it changes, not what it returns. Assert the value it returns."
+        }
+    }
+
+    /// The surviving mutants worth a line of advice. Where the mutant that leaves a body at its
+    /// start survived, the one that returns the same value after the statements says nothing more.
+    static func advised(_ survived: [ExtremeMutation]) -> [ExtremeMutation] {
+        let leaving = Set(survived.compactMap(\.returnedExpression))
+        return survived.filter { mutation in
+            if case .resultOnly(let expression) = mutation { return !leaving.contains(expression) }
+            return true
         }
     }
 
@@ -81,7 +94,13 @@ public enum Reporter {
         if result.executed == .notExecuted {
             return "No test runs \(place) of `\(method)`. Add a test of this case."
         }
-        let survived = result.survivingMutants.map(\.mutant.mutation)
+        let survived = advised(result.survivingMutants.map(\.mutant.mutation))
+        if survived.allSatisfy(\.isResultOnly), !survived.isEmpty {
+            // A test of the case exists, and detects that the case does something.
+            let values = survived.map { "`\($0.replacementStatement)`" }.joined(separator: " or ")
+            return "In \(place), `\(method)` can \(values) after the statements of the case without any test failing: "
+                + "tests check what the case changes, not what it returns. Assert the result."
+        }
         let behaviours = survived.map { mutation in
             switch mutation {
             case .emptyBody: "do nothing"
@@ -89,6 +108,7 @@ public enum Reporter {
             case .emptyView: "render nothing"
             case .throwError: "throw"
             case .otherCase(let label): "do what `\(label)` does"
+            case .resultOnly(let expression): "`return \(expression)` after the statements of the case"
             default: mutation.summary
             }
         }
@@ -127,8 +147,8 @@ public enum Reporter {
                     if !detected.isEmpty {
                         out += "    detected: \(detected.map(\.mutant.mutation.summary).joined(separator: ", "))\n"
                     }
-                    for mutant in result.survivingMutants {
-                        out += "    → \(advice(for: mutant.mutant.mutation, method: result.method.name))\n"
+                    for mutation in advised(result.survivingMutants.map(\.mutant.mutation)) {
+                        out += "    → \(advice(for: mutation, method: result.method.name))\n"
                     }
                     for unverified in result.unverifiedCases {
                         out += "    → \(advice(for: unverified, method: result.method.name))\n"
@@ -179,8 +199,8 @@ public enum Reporter {
                     out += "- **`\(result.method.name)`** — `\(location(result.method))`\n"
                     if let note = referenceNote(result) { out += "  - \(note)\n" }
                     if let note = executionNote(result, in: report) { out += "  - \(note)\n" }
-                    for mutant in result.survivingMutants {
-                        out += "  - \(mutant.mutant.mutation.summary) survived. \(advice(for: mutant.mutant.mutation, method: result.method.name))\n"
+                    for mutation in advised(result.survivingMutants.map(\.mutant.mutation)) {
+                        out += "  - \(mutation.summary) survived. \(advice(for: mutation, method: result.method.name))\n"
                     }
                     for unverified in result.unverifiedCases {
                         out += "  - \(advice(for: unverified, method: result.method.name))\n"

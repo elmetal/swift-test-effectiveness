@@ -165,3 +165,42 @@ extension Recorder {
 
     public func reset() {}
 }
+
+public struct Outbox {
+    public struct State: Equatable, Sendable {
+        public var sent = 0
+        public var failed = 0
+
+        public init() {}
+    }
+
+    public init() {}
+
+    /// Each case changes the state and then says what happens next.
+    /// Tests: `.received` asserts the state and the command, `.opened` the state only, and
+    /// `.refreshed` runs without an assertion.
+    public var handler: Handler<State, Event> {
+        Handler { state, event in
+            switch event {
+            case .received:
+                state.sent += 1
+                return .save
+            case .opened:
+                state.failed += 1
+                return .reload
+            case .refreshed:
+                state.sent = 0
+                return .save
+            default:
+                return .none
+            }
+        }
+    }
+
+    /// Changes the state and says whether it did. Tests assert the state, never the result.
+    public func send(_ count: Int, in state: inout State) -> Bool {
+        guard count > 0 else { return false }
+        state.sent += count
+        return true
+    }
+}
