@@ -54,3 +54,8 @@ import Testing
 @Test func countsItems() async throws {
     #expect(try await Archive().count(of: [1, 2, 3]).run() == 3)
 }
+
+@Test func idleRuns() {
+    var count = 0
+    _ = Archive().idle.handle(&count, .received)
+}

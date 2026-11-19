@@ -146,3 +146,11 @@ extension Archive {
         }
     }
 }
+
+extension Archive {
+    /// A closure that only returns the value its mutant returns. A test runs it without an
+    /// assertion, and there is nothing it could assert.
+    public var idle: Handler<Int, Event> {
+        Handler { _, _ in .none }
+    }
+}

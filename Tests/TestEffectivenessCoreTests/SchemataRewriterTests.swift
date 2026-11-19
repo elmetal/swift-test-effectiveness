@@ -154,8 +154,16 @@ struct SchemataRewriterTests {
     }
 
     @Test func handlesMultipleMethodsOnOneLine() {
-        let output = rewrite("func a() -> Bool { true }; func b() -> Bool { false }")
-        #expect(output == "func a() -> Bool { switch __steActiveMutant { case 1: return true; case 2: return false; case -2: __steReached(1); default: break }; return true }; func b() -> Bool { switch __steActiveMutant { case 3: return true; case 4: return false; case -2: __steReached(3); default: break }; return false }\n")
+        let output = rewrite("func a() -> Bool { x }; func b() -> Bool { y }")
+        #expect(output == "func a() -> Bool { switch __steActiveMutant { case 1: return true; case 2: return false; case -2: __steReached(1); default: break }; return x }; func b() -> Bool { switch __steActiveMutant { case 3: return true; case 4: return false; case -2: __steReached(3); default: break }; return y }\n")
+    }
+
+    /// The mutant that returns what the body returns is not in the switch.
+    @Test func aBodyThatOnlyReturnsAValueGetsTheOtherMutants() {
+        let output = rewrite("func a() -> Bool { true }; func b() -> Int? { nil }; func c() -> Int { 0 }")
+        #expect(output == "func a() -> Bool { switch __steActiveMutant { case 1: return false; case -2: __steReached(1); default: break }; return true }; "
+            + "func b() -> Int? { nil }; "
+            + "func c() -> Int { switch __steActiveMutant { case 2: return 1; case -2: __steReached(2); default: break }; return 0 }\n")
     }
 
     @Test func footerReadsEnvironmentVariable() {

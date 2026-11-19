@@ -157,6 +157,27 @@ struct ClosureUnitsTests {
         #expect(decisions("Void", body: "print(1)") == [.skip(reason: AridDetector.skipReason)])
     }
 
+    /// A closure that only returns the value has nothing a test could detect.
+    @Test func aClosureThatOnlyReturnsTheValueOfItsMutantIsNotAnalyzed() {
+        let methods = discover("""
+        func f() {
+            a(Handler { _, _ in .none })
+            b(Handler { _, _ in
+                return .none
+            })
+            c(Handler { state, _ in
+                state.count += 1
+                return .none
+            })
+            d(Check { _ in true })
+        }
+        """, closures: ["Handler=Command", "Check=Bool"], defaultValues: ["Command=.none"])
+        let reason = "body only returns the value of its mutant (`return .none`)"
+        #expect(methods.dropFirst().map(\.decision) == [
+            .skip(reason: reason), .skip(reason: reason), .mutate([.returnValue(".none")]), .mutate([.returnBool(false)]),
+        ])
+    }
+
     @Test func whatKeepsABodyFromTheMutantSwitchKeepsItsClosuresFromIt() {
         let inlinable = discover("@inlinable func f() { run { work() } }", closures: ["run=Void"])
         #expect(inlinable.map(\.decision) == Array(

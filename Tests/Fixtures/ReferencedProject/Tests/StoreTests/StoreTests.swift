@@ -16,7 +16,8 @@ struct MockRepository: Repository {
 @Test func serviceWithMock() {
     let service = UserService(repo: MockRepository())
     #expect(service.name(of: 1) == "mock")
-    #expect(service.isReady)
+    // Read without an assertion: the mutant of `isReady` that tests can detect survives.
+    _ = service.isReady
 }
 
 @Test func percent() {

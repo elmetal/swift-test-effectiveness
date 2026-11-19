@@ -293,6 +293,17 @@ public enum MethodDiscovery {
                     mutations.append(.throwError)
                     decision = .mutate(mutations)
                 }
+                // A body that only returns what a mutant returns: that mutant is the body as
+                // it is, and no test could detect it.
+                if case .mutate(let mutations) = decision, !isResultBuilder, opaqueBody == nil,
+                   let value = SwitchCases.returnedValue(of: statements) {
+                    let detectable = mutations.filter { !SwitchCases.isEquivalent($0, to: value) }
+                    if detectable.isEmpty, let equivalent = mutations.first {
+                        decision = .skip(reason: Self.onlyReturnsTheValueOfItsMutant(equivalent))
+                    } else {
+                        decision = .mutate(detectable)
+                    }
+                }
             }
 
             // The body of a local function keeps its implicit return, and so does a result builder.
@@ -354,6 +365,10 @@ public enum MethodDiscovery {
                     )
                 )
             }
+        }
+
+        static func onlyReturnsTheValueOfItsMutant(_ mutation: ExtremeMutation) -> String {
+            "body only returns the value of its mutant (\(mutation.summary))"
         }
 
         static let conditionalImplicitReturn = "`#if` in the body decides whether its value is returned implicitly"
