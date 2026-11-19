@@ -241,6 +241,48 @@ struct ReporterTests {
         #expect(rendered.contains(format == .text ? "  → \(hint)\n" : "\n\n\(hint)\n\n</details>"))
     }
 
+    /// The method around a closure that is analyzed on its own only makes it: a value for the
+    /// type that holds the closure would say nothing about the closure.
+    @Test(arguments: [ReportFormat.text, .markdown])
+    func theHintLeavesOutTheMethodsAroundClosures(_ format: ReportFormat) throws {
+        func method(_ name: String, _ kind: MethodInfo.Kind, file: String = "Sources/A.swift", lines: ClosedRange<Int>) -> MethodInfo {
+            MethodInfo(
+                file: file, name: name, kind: kind,
+                declarationStart: SourcePosition(line: lines.lowerBound, column: 5),
+                declarationEnd: SourcePosition(line: lines.upperBound, column: 5),
+                bodyStart: SourcePosition(line: lines.lowerBound, column: 30), returnType: nil
+            )
+        }
+        let analyzed = method("handler, Handler { }", .closure, lines: 2...4)
+        let skipped = [
+            // Around a closure that is analyzed.
+            SkippedMethod(method: method("handler", .getter, lines: 1...5), reason: "unsupported return type `Handler<State, Event>`"),
+            // Around a closure that is listed here as well.
+            SkippedMethod(method: method("idle", .getter, lines: 7...9), reason: "unsupported return type `Handler<State, Event>`"),
+            SkippedMethod(method: method("idle, Handler { }", .closure, lines: 8...8), reason: "body only returns the value of its mutant (`return .none`)"),
+            // A closure whose own type has no value, and the method around it.
+            SkippedMethod(method: method("route()", .function, lines: 11...13), reason: "unsupported return type `Router`"),
+            SkippedMethod(method: method("route(), route { }", .closure, lines: 12...12), reason: "unsupported return type `Screen`"),
+            // No closure in it, and the closure of the same lines is in another file.
+            SkippedMethod(method: method("tint", .getter, lines: 15...17), reason: "unsupported return type `Tint`"),
+            SkippedMethod(method: method("make()", .function, file: "Sources/B.swift", lines: 1...5), reason: "unsupported return type `Handler<Int, Event>`"),
+        ]
+        let hint = "To analyze the methods that return a type without a simplest value, give the type one with "
+            + "`--default-value TYPE=EXPRESSION`: `Handler` (1 method), `Screen` (1 method) and `Tint` (1 method)."
+        #expect(Reporter.defaultValueHint(skipped, analyzed: [analyzed]) == hint)
+        // Without the closures, every method counts.
+        #expect(Reporter.defaultValueHint(skipped.filter { $0.method.kind != .closure })?.hasSuffix(
+            ": `Handler` (3 methods), `Router` (1 method) and `Tint` (1 method)."
+        ) == true)
+
+        let report = AnalysisReport(
+            projectPath: "/p", coverageAvailable: true,
+            methods: [MethodResult(method: analyzed, executed: .executed, classification: .tested, mutants: [])],
+            skipped: skipped
+        )
+        #expect(try Reporter.render(report, format: format).contains(hint))
+    }
+
     @Test func theHintNamesTheTypesOfMostMethods() {
         let reasons = (1...7).flatMap { number in
             Array(repeating: "unsupported return type `T\(number)`", count: number)
