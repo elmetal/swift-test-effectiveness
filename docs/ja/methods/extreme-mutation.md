@@ -50,6 +50,22 @@
 | 型指定なしの `throws`（`--throw-mutants` 指定時のみ） | 上記に加えて `throw` |
 | `async` | 変更なし（上記の規則をそのまま適用） |
 
+### そのほかの戻り値型の値
+
+上の規則が扱うのは標準ライブラリの型です。プロジェクトやライブラリの型にも、最も単純な値はたいていあります（`.zero`、`.empty`、`.none`）。ただし、それを知っているのはプロジェクトだけです。`--default-value` でその値を指定します。
+
+```sh
+swift-test-effectiveness --default-value 'Money=.zero' --default-value 'Tint=.gray'
+```
+
+`Money` を返すメソッドには、`return .zero` のミュータントが入ります。`--case-mutants` を指定すると、switch の各 case にも同じミュータントが入ります。別の case と同じことをさせるミュータントは使いません。
+
+- 式は、その型を返すすべてのメソッドに書き込まれるので、どのメソッドでもコンパイルできる必要がある。ローカルな名前ではなく、先頭がドットの式（`.zero`）やイニシャライザ（`Money(cents: 0)`）を使う。
+- 戻り値型は、書かれたとおりに比較する。このツールは型を解決しないためである。`Money=…` は `Money`、`Shop.Money`、`Money<Yen>` に一致する。`Shop.Money=…` と `Money<Yen>=…` はより具体的で、`Money=…` より優先される。型全体も指定できる（`'Result<Int, Error>=.success(0)'`、`'(Int, Int)=(0, 0)'`）。typealias は別の名前なので、別に値を指定する。`Money?` と `[Money]` には、表の規則がそのまま当たる。
+- 1 つの型に複数の値を指定すると、`true` と `false` のように、値ごとにミュータントができる。
+- 表にある型に値を指定すると、その型のミュータントを置き換える。
+- `some` の型と result builder には値を使わない。`some` の型では、すべての `return` が同じ具体型を返すためである。
+
 ## switch の case
 
 既定ではオフです。`--case-mutants` で有効になります。
@@ -87,14 +103,14 @@ result builder の本体や `some View` を返すメソッドの中の switch、
 
 | case | ミュータント |
 |---|---|
-| ミュータントが返すのと同じリテラルを返す（`case .none: return nil`、`case .a: true`） | そのミュータントを除く（`true` には `return false` が残る） |
+| ミュータントが返すのと同じリテラルを返す（`case .none: return nil`、`case .a: true`）。または `--default-value` で指定した式を返す（コードとして比較するので、空白やコメントの違いは無視する） | そのミュータントを除く（`true` には `return false` が残る） |
 | `Void` メソッドで、何もしない（`break`、値のない `return`）か、ログ出力だけ（[arid](#arid-な本体)） | なし |
 | `fatalError()` か `preconditionFailure()` を呼ぶだけ | なし |
 | throw する（`--throw-mutants` 指定時） | `throw` のミュータントを除く |
 
 ### 最も単純な値がない戻り値型
 
-enum やプロジェクト独自の型など、汎用的なデフォルト値がない型を返すメソッドには、メソッド自身のミュータントがありません（[対象外](#対象外) を参照）。`--case-mutants` を指定すると、こうしたメソッドを case だけで解析します。各 case には、別の case と同じことをさせます。
+enum やプロジェクト独自の型など、汎用的なデフォルト値がない型を返すメソッドには、メソッド自身のミュータントがありません（[対象外](#対象外) を参照）。ただし、`--default-value` で [その型に値を指定した](#そのほかの戻り値型の値) 場合を除きます。`--case-mutants` を指定すると、こうしたメソッドを case だけで解析します。各 case には、別の case と同じことをさせます。
 
 ```swift
 var tint: Tint {
@@ -157,7 +173,7 @@ JSON レポートでは、case を流したメソッドに `cases` が付きま�
 | `rethrows` の関数が返す `some View` | 元の本体を入れるローカル関数を `rethrows` にできない（[詳細](../../../ARCHITECTURE.ja.md#mutant-schemata)） |
 | すべてコンパイルから外れうる `#if` ブロックと並んだ式 | 暗黙に返されるかどうかがビルド構成で決まる（[詳細](../../../ARCHITECTURE.ja.md#mutant-schemata)） |
 | `View` 以外の result builder | builder がどの構文をサポートするか分からない |
-| タプル、`Result`、ジェネリック型パラメータ、ユーザー定義型、`some View` 以外の opaque 型など | 汎用的なデフォルト値がない。`--case-mutants` を指定すると、末尾が switch のメソッドは [case ごとに](#最も単純な値がない戻り値型) 解析する |
+| タプル、`Result`、ジェネリック型パラメータ、ユーザー定義型、`some View` 以外の opaque 型など | 汎用的なデフォルト値がない。opaque 型以外は、`--default-value` で [値を指定できる](#そのほかの戻り値型の値)。`--case-mutants` を指定すると、末尾が switch のメソッドは [case ごとに](#最も単純な値がない戻り値型) 解析する |
 
 対象外のメソッドは黙って捨てず、レポートの *Not analyzed* に理由付きで列挙します。
 
@@ -180,7 +196,7 @@ JSON レポートでは、case を流したメソッドに `cases` が付きま�
 ## 限界
 
 - 極端ミューテーションは「メソッドが何かしら検証されているか」を見るだけで、検証が十分かは見ない。`tested` は品質の保証ではなく、「明白な穴がない」ことを意味する。詳細な検証は通常のミューテーションテストで行う。
-- 戻り値型がサポート外のメソッドは解析できない（[対象外](#対象外) を参照）。ただし末尾が switch のメソッドは、case ごとになら解析できる（[switch の case](#switch-の-case) を参照）。
+- 戻り値型がサポート外のメソッドは解析できない（[対象外](#対象外) を参照）。ただし `--default-value` で値を指定した型は解析できる。また、末尾が switch のメソッドは、case ごとになら解析できる（[switch の case](#switch-の-case) を参照）。
 - switch のどれか 1 つの case をテストすれば、本体全体のミュータントは全て検出される。`--case-mutants` を指定しないと、こうしたメソッドは、テストが確かめている case がどれだけ少なくても `tested` になる。
 
 ## 実装

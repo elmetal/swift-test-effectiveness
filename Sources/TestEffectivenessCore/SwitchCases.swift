@@ -238,6 +238,8 @@ enum SwitchCases {
             return false
         case .returnEmptyData:
             return value.trimmedDescription == "Data()"
+        case .returnValue(let expression):
+            return DefaultValues.tokens(of: expression) == value.tokens(viewMode: .sourceAccurate).map(\.text)
         case .emptyBody, .emptyView, .throwError, .otherCase:
             return false
         }

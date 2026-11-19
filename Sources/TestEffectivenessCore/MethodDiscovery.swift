@@ -57,13 +57,17 @@ public struct DiscoveryOptions: Sendable {
     public var arid: AridDetector?
     /// Also mutate each case of a switch that a method ends with (see `DiscoveredCase`).
     public var caseMutants: Bool
+    /// The values to return for the return types the user named.
+    public var defaultValues: DefaultValues
 
     public init(
-        includeThrowMutants: Bool = false, arid: AridDetector? = AridDetector(), caseMutants: Bool = false
+        includeThrowMutants: Bool = false, arid: AridDetector? = AridDetector(), caseMutants: Bool = false,
+        defaultValues: DefaultValues = DefaultValues()
     ) {
         self.includeThrowMutants = includeThrowMutants
         self.arid = arid
         self.caseMutants = caseMutants
+        self.defaultValues = defaultValues
     }
 }
 
@@ -255,7 +259,9 @@ public enum MethodDiscovery {
             } else if leftBrace.presence == .missing || rightBrace.presence == .missing {
                 decision = .skip(reason: "could not parse the body")
             } else {
-                decision = MutationOperators.mutations(for: returnType, isResultBuilder: isResultBuilder)
+                decision = MutationOperators.mutations(
+                    for: returnType, isResultBuilder: isResultBuilder, defaults: options.defaultValues
+                )
                 // Only the empty-body mutant is affected: any other mutant replaces a result,
                 // which tests should check whatever the body logs.
                 if case .mutate(let mutations) = decision, mutations == [.emptyBody], let arid = options.arid, arid.isArid(statements) {

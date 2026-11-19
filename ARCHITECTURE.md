@@ -164,7 +164,7 @@ In custom mode, the active mutant is exported as both `STE_MUTANT` and `TEST_RUN
 
 #### Case mutants
 
-With `--case-mutants`, `MethodDiscovery` asks `SwitchCases.discover` for the cases of the switch a body ends with (`DiscoveredMethod.cases`); see [Cases of a switch](docs/methods/extreme-mutation.md#cases-of-a-switch) for which switches and cases qualify. A method whose return type has no simplest value is then kept with `.mutate([])`: no mutant of its own, only those of its cases.
+With `--case-mutants`, `MethodDiscovery` asks `SwitchCases.discover` for the cases of the switch a body ends with (`DiscoveredMethod.cases`); see [Cases of a switch](docs/methods/extreme-mutation.md#cases-of-a-switch) for which switches and cases qualify. A method whose return type has no simplest value, neither built in nor given with `--default-value` (`DefaultValues`), is then kept with `.mutate([])`: no mutant of its own, only those of its cases.
 
 `Analyzer.run()` gives the mutants of a method's cases the ids after the method's own, and `SchemataRewriter` puts them at the start of each case, after the label's colon:
 

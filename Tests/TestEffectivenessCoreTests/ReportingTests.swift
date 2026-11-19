@@ -231,6 +231,7 @@ struct ReporterTests {
             (.returnEmptyArray, "`Calc.f()` can always return an empty collection without any test failing. Assert the elements."),
             (.returnEmptyDictionary, "`Calc.f()` can always return an empty collection without any test failing. Assert the elements."),
             (.returnEmptyData, "`Calc.f()` can always return an empty collection without any test failing. Assert the elements."),
+            (.returnValue(".zero"), "`Calc.f()` can always return `.zero` without any test failing. Assert the value it returns."),
             (.emptyView, "`Calc.f()` can render nothing without any test failing. Add a UI, snapshot or view-inspection test."),
             (.throwError, "`Calc.f()` can always throw without any test failing. Assert that it succeeds for valid input."),
         ]

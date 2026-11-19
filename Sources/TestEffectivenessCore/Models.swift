@@ -39,6 +39,8 @@ public enum ExtremeMutation: Codable, Hashable, Sendable {
     case returnEmptyDictionary
     /// `some View` results: `EmptyView()`.
     case emptyView
+    /// Results of a type the user gave a value for: `return <expression>` (see `DefaultValues`).
+    case returnValue(String)
     /// Throwing methods (opt-in): `throw <error>`.
     case throwError
     /// A case of a switch, in a method whose return type has no simplest value: the case does
@@ -58,6 +60,7 @@ public enum ExtremeMutation: Codable, Hashable, Sendable {
         case .returnEmptyData: "return Data()"
         case .returnEmptyDictionary: "return [:]"
         case .emptyView: "EmptyView()"
+        case .returnValue(let expression): "return \(expression)"
         case .throwError: "throw \(SchemataRewriter.errorTypeName)()"
         // Unless the other case is not the next one: see `DiscoveredCase.otherCaseStatement`.
         case .otherCase: "fallthrough"

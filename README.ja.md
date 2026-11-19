@@ -117,6 +117,7 @@ swift-test-effectiveness /path/to/package
 | `--coverage-binary <path>` | カバレッジ | カスタムモード：カバレッジ付きでビルドしたバイナリ、またはバイナリを探すディレクトリ（複数指定可） |
 | `--throw-mutants` | 極端ミューテーション | 型指定なしの `throws` メソッドに `throw` するミュータントを追加 |
 | `--case-mutants` | 極端ミューテーション | メソッドの末尾にある switch の各 case もミューテーションし、どのテストも検証していない case を見つける。enum などデフォルト値のない型を返すメソッドも、この形なら解析する（[switch の case](docs/ja/methods/extreme-mutation.md#switch-の-case) を参照） |
+| `--default-value <type>=<expression>` | 極端ミューテーション | この戻り値型のメソッドのミュータントとして、この式を返す。例：`'Money=.zero'`。組み込みの規則に値がない型のために使う（複数可。[そのほかの戻り値型の値](docs/ja/methods/extreme-mutation.md#そのほかの戻り値型の値) を参照） |
 | `--no-arid` | 極端ミューテーション | 本体がログ出力だけの `Void` メソッドも解析する（既定では対象外。[対象外](docs/ja/methods/extreme-mutation.md#対象外) を参照） |
 | `--arid-call <name>` | 極端ミューテーション | この関数の呼び出しもログ出力とみなす。例：`track`、`Analytics.shared.track`（複数可） |
 | `--jobs <n>` | 極端ミューテーション | 同時に流すテスト実行の数（[並列実行](#並列実行) を参照） |
