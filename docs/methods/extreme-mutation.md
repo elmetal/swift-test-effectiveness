@@ -60,6 +60,17 @@ swift-test-effectiveness --default-value 'Money=.zero' --default-value 'Tint=.gr
 
 A method that returns `Money` then gets the mutant `return .zero`. With `--case-mutants`, so does each case of its switch, instead of doing what another case does.
 
+Which types to name is in the report: after the methods it lists under *Not analyzed*, it names the return types without a simplest value, the ones most methods return first. `--dry-run` prints the same line without building anything.
+
+```
+Not analyzed (2)
+  Sources/Switches/Switches.swift:106  LoadState.tint — unsupported return type `Tint`
+  Sources/Switches/Switches.swift:117  LoadState.severity(threshold:) — unsupported return type `Severity`
+  → To analyze the methods that return a type without a simplest value, give the type one with `--default-value TYPE=EXPRESSION`: `Severity` (1 method) and `Tint` (1 method).
+```
+
+A type is named as `--default-value` takes it: without its generic arguments (`Box` for `Box<Int>`). The line is a list of candidates, not of types that have such a value: a generic type parameter (`T`) is in it as well, and has none.
+
 - The expression is written into every method that returns the type, so it has to compile in all of them: a leading dot (`.zero`) or an initializer (`Money(cents: 0)`) rather than a local name.
 - Return types are compared as they are written, because the tool does not resolve types. `Money=…` matches `Money`, `Shop.Money` and `Money<Yen>`. `Shop.Money=…` and `Money<Yen>=…` are more specific, and win over `Money=…`. The whole type can be named as well (`'Result<Int, Error>=.success(0)'`, `'(Int, Int)=(0, 0)'`). A type alias is another name and needs a value of its own. `Money?` and `[Money]` keep the rules of the table.
 - Several values for one type are a mutant each, like `true` and `false`.
@@ -175,7 +186,7 @@ In the JSON report a method whose cases ran has `cases`: for each case with muta
 | result builders other than `View` | unknown which constructs the builder supports |
 | tuples, `Result`, generic type parameters, user-defined types, opaque types other than `some View`, … | no general default value. `--default-value` [gives a type one](#values-for-other-return-types), except an opaque type. With `--case-mutants`, a method that ends with a switch is analysed [case by case](#return-types-without-a-simplest-value) |
 
-Methods that are not targeted are not silently dropped: the report lists them under *Not analyzed* with the reason.
+Methods that are not targeted are not silently dropped: the report lists them under *Not analyzed* with the reason. For the return types without a default value, it also says [which types to give one](#values-for-other-return-types).
 
 ### Arid bodies
 

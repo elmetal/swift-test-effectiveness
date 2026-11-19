@@ -215,6 +215,49 @@ struct ReporterTests {
         #expect(text.contains("can always return `true` without any test failing. Add a case where it must return `false`."))
     }
 
+    private func skipped(_ reasons: [String]) -> [SkippedMethod] {
+        reasons.enumerated().map { index, reason in
+            let position = SourcePosition(line: index + 1, column: 1)
+            let method = MethodInfo(
+                file: "Sources/A.swift", name: "f\(index)()", kind: .function,
+                declarationStart: position, declarationEnd: position, bodyStart: position, returnType: nil
+            )
+            return SkippedMethod(method: method, reason: reason)
+        }
+    }
+
+    /// A return type without a simplest value is the one reason the user can do something about.
+    @Test(arguments: [ReportFormat.text, .markdown])
+    func notAnalyzedSaysWhichTypesAValueWouldHelp(_ format: ReportFormat) throws {
+        let reasons = [
+            "unsupported return type `Severity`", "unsupported return type `Tint`", "unsupported return type `Box<Int>`",
+            "unsupported return type `Tint`", "unsupported return type `some Shape`", "returns `Never`",
+        ]
+        let report = AnalysisReport(projectPath: "/p", coverageAvailable: true, methods: [], skipped: skipped(reasons))
+        let hint = "To analyze the methods that return a type without a simplest value, give the type one with "
+            + "`--default-value TYPE=EXPRESSION`: `Tint` (2 methods), `Box` (1 method) and `Severity` (1 method)."
+        #expect(Reporter.defaultValueHint(report.skipped) == hint)
+        let rendered = try Reporter.render(report, format: format)
+        #expect(rendered.contains(format == .text ? "  → \(hint)\n" : "\n\n\(hint)\n\n</details>"))
+    }
+
+    @Test func theHintNamesTheTypesOfMostMethods() {
+        let reasons = (1...7).flatMap { number in
+            Array(repeating: "unsupported return type `T\(number)`", count: number)
+        }
+        #expect(Reporter.defaultValueHint(skipped(reasons))?.hasSuffix(
+            ": `T7` (7 methods), `T6` (6 methods), `T5` (5 methods), `T4` (4 methods), `T3` (3 methods) and 2 more types."
+        ) == true)
+    }
+
+    @Test(arguments: [ReportFormat.text, .markdown])
+    func noHintWhenNoValueWouldHelp(_ format: ReportFormat) throws {
+        let reasons = ["unsupported return type `some Shape`", "result builder body returning `Money`", "could not parse the body"]
+        let report = AnalysisReport(projectPath: "/p", coverageAvailable: true, methods: [], skipped: skipped(reasons))
+        #expect(Reporter.defaultValueHint(report.skipped) == nil)
+        #expect(!(try Reporter.render(report, format: format)).contains("--default-value"))
+    }
+
     @Test func everySectionHasItsTitle() {
         #expect(Reporter.sectionOrder.map(Reporter.title) == ["Pseudo-tested", "Partially tested", "Not covered", "Tested"])
     }

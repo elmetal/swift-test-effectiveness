@@ -119,7 +119,30 @@ struct MutationOperatorsTests {
         #expect(decision("some Shape", defaults: ["some Shape=Circle()"]) == .skip(reason: "unsupported return type `some Shape`"))
         #expect(decision("some View", defaults: ["some View=Text(\"\")"]) == .mutate([.emptyView]))
         #expect(decision("Money", builder: true, defaults: ["Money=.zero"]) == .skip(reason: "result builder body returning `Money`"))
-        #expect(decision("any Shape", builder: true, defaults: ["any Shape=Circle()"]) == .skip(reason: "unsupported return type `any Shape`"))
+        #expect(decision("any Shape", builder: true, defaults: ["any Shape=Circle()"]) == .skip(reason: "result builder body returning `any Shape`"))
+    }
+
+    /// The reason a method is not analyzed says which type a value would help, if any.
+    @Test(arguments: [
+        ("Tint", "Tint"), ("Box<Int>", "Box"), ("Shop.Money", "Shop.Money"), ("Shop.Box<Int>.Item", "Shop.Box.Item"),
+        ("(Int,  Int)", "(Int, Int)"), ("any Shape", "any Shape"), ("() -> Void", "() -> Void"),
+        ("some Shape", nil), ("(some Shape, Int)", nil), ("Never", nil), ("Int", nil),
+    ] as [(String, String?)])
+    func aReasonNamesTheTypeToGiveAValue(_ type: String, _ name: String?) {
+        guard case .skip(let reason) = decision(type) else {
+            #expect(name == nil)
+            return
+        }
+        #expect(DefaultValues.typeToName(in: reason) == name)
+        // The name is one the value is found under.
+        if let name {
+            #expect(decision(type, defaults: ["\(name)=.value"]) == .mutate([.returnValue(".value")]))
+        }
+    }
+
+    @Test func otherReasonsNameNoType() {
+        #expect(DefaultValues.typeToName(in: "result builder body returning `Money`") == nil)
+        #expect(DefaultValues.typeToName(in: "could not parse the body") == nil)
     }
 
     @Test(arguments: [
