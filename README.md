@@ -142,7 +142,7 @@ The other methods need files that the build and the test run write. Build into a
 swift-test-effectiveness /path/to/App \
   --source-dir App \
   --build-command "xcodebuild build-for-testing -scheme App -derivedDataPath build -enableCodeCoverage YES -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
-  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
+  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -parallel-testing-worker-count 1 -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
   --index-store-path build/Index.noindex/DataStore \
   --coverage-profdata build/Build/ProfileData \
   --coverage-binary build/Build/Products
@@ -151,6 +151,7 @@ swift-test-effectiveness /path/to/App \
 - `--index-store-path`: the referenced column (see [Static test references](docs/methods/static-references.md#when-the-index-is-unavailable)) and [test selection](#test-selection).
 - `{only-testing}`: [test selection](#test-selection).
 - `-collect-test-diagnostics never`: most mutants make a test fail, and by default xcodebuild then collects diagnostics, which made a failing run take 39s instead of 5s in our measurements.
+- `-parallel-testing-worker-count 1`: when the test plan or scheme turns on parallel testing, xcodebuild clones the simulator and boots the clone for every run, which made a run take about 200s instead of 24s in our measurements. With one worker the tests ran on the destination itself, and Swift Testing still ran them in parallel within the process; the tool runs test runs in parallel with [`--jobs`](#parallel-runs).
 - `-enableCodeCoverage YES`, `--coverage-profdata` and `--coverage-binary`: the executed column. After the baseline, the tool reads the newest `.profdata` the baseline wrote and exports the coverage of every Mach-O binary under `--coverage-binary` with `xcrun llvm-cov export`; binaries without coverage data are skipped. Without coverage, methods that no test executes are reported as `pseudo-tested` rather than `not-covered`, and their mutants run.
 
 ### Test selection
@@ -208,7 +209,7 @@ for n in 1 2 3 4; do xcrun simctl clone "iPhone 17" "STE-$n"; done
 
 swift-test-effectiveness /path/to/App \
   --jobs 4 \
-  --test-command "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -destination 'platform=iOS Simulator,name=STE-{job},OS=26.2' -resultBundlePath {result-bundle} {only-testing}" \
+  --test-command "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -parallel-testing-worker-count 1 -destination 'platform=iOS Simulator,name=STE-{job},OS=26.2' -resultBundlePath {result-bundle} {only-testing}" \
   …
 ```
 

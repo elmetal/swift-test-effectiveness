@@ -151,7 +151,7 @@ swift-test-effectiveness /path/to/App \
 swift-test-effectiveness /path/to/App \
   --source-dir App \
   --build-command "xcodebuild build-for-testing -scheme App -derivedDataPath build -enableCodeCoverage YES -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'" \
-  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
+  --test-command  "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -parallel-testing-worker-count 1 -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' {only-testing}" \
   --index-store-path build/Index.noindex/DataStore \
   --coverage-profdata build/Build/ProfileData \
   --coverage-binary build/Build/Products
@@ -160,6 +160,7 @@ swift-test-effectiveness /path/to/App \
 - `--index-store-path`：referenced 列（[テストからの静的な参照](docs/ja/methods/static-references.md#インデックスが使えないとき) を参照）と [テスト選択](#テスト選択) に使います。
 - `{only-testing}`：[テスト選択](#テスト選択) に使います。
 - `-collect-test-diagnostics never`：ほとんどのミュータントはテストを失敗させます。xcodebuild は既定でそのたびに診断情報を集めるので、手元の計測では失敗する実行が 5 秒ではなく 39 秒かかりました。
+- `-parallel-testing-worker-count 1`：テストプランやスキームで並列テストが有効だと、xcodebuild は実行のたびにシミュレーターをクローンして起動します。手元の計測では 1 回の実行が 24 秒ではなく約 200 秒かかりました。ワーカーを 1 つにするとテストは指定したシミュレーターで実行され、Swift Testing はプロセス内でテストを並列に実行したままでした。テストの実行同士の並列化は [`--jobs`](#並列実行) が担います。
 - `-enableCodeCoverage YES`、`--coverage-profdata`、`--coverage-binary`：executed 列に使います。ベースラインの後、ベースラインが書き出した最新の `.profdata` を読み、`--coverage-binary` の下にある Mach-O バイナリそれぞれのカバレッジを `xcrun llvm-cov export` で取り出します。カバレッジデータのないバイナリは飛ばします。カバレッジがないと、どのテストも実行しないメソッドは `not-covered` ではなく `pseudo-tested` として報告され、そのミュータントも流れます。
 
 ### テスト選択
@@ -217,7 +218,7 @@ for n in 1 2 3 4; do xcrun simctl clone "iPhone 17" "STE-$n"; done
 
 swift-test-effectiveness /path/to/App \
   --jobs 4 \
-  --test-command "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -destination 'platform=iOS Simulator,name=STE-{job},OS=26.2' -resultBundlePath {result-bundle} {only-testing}" \
+  --test-command "xcodebuild test-without-building -scheme App -derivedDataPath build -enableCodeCoverage YES -collect-test-diagnostics never -parallel-testing-worker-count 1 -destination 'platform=iOS Simulator,name=STE-{job},OS=26.2' -resultBundlePath {result-bundle} {only-testing}" \
   …
 ```
 
