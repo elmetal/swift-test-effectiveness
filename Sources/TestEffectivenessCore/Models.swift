@@ -46,6 +46,9 @@ public enum ExtremeMutation: Codable, Hashable, Sendable {
     /// A case of a switch, in a method whose return type has no simplest value: the case does
     /// what the case with this label does (see `DiscoveredCase`).
     case otherCase(String)
+    /// The body runs, and every `return` of it gives this expression instead of its own (see
+    /// `ResultMutants`).
+    case resultOnly(String)
 
     /// Swift statement executed in place of the original body (except `emptyView`, which is the
     /// other branch of the original body: see `SchemataRewriter`).
@@ -64,7 +67,26 @@ public enum ExtremeMutation: Codable, Hashable, Sendable {
         case .throwError: "throw \(SchemataRewriter.errorTypeName)()"
         // Unless the other case is not the next one: see `DiscoveredCase.otherCaseStatement`.
         case .otherCase: "fallthrough"
+        // In place of each `return` of the body, not of the body.
+        case .resultOnly(let expression): "return \(expression)"
         }
+    }
+
+    /// The expression a mutant that leaves the body at its start returns; `nil` for one that
+    /// returns nothing, throws, or does something else.
+    var returnedExpression: String? {
+        switch self {
+        case .returnNil, .returnBool, .returnNumber, .returnString, .returnEmptyArray, .returnEmptyData,
+             .returnEmptyDictionary, .returnValue:
+            replacementExpression
+        case .emptyBody, .emptyView, .throwError, .otherCase, .resultOnly:
+            nil
+        }
+    }
+
+    var isResultOnly: Bool {
+        if case .resultOnly = self { return true }
+        return false
     }
 
     /// What stands for the result in an `if` expression: the statement without its `return`.
@@ -84,6 +106,7 @@ public enum ExtremeMutation: Codable, Hashable, Sendable {
         case .emptyBody: "empty body"
         case .emptyView: "`EmptyView()`"
         case .otherCase(let label): "as `\(label)`"
+        case .resultOnly(let expression): "`return \(expression)` after its statements"
         default: "`\(replacementStatement)`"
         }
     }

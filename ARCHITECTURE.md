@@ -21,7 +21,7 @@ The pipeline is a set of shared stages around a sequence of method layers, order
 | # | Stage | Kind | File |
 |---|---|---|---|
 | 1 | List source files: non-test targets from `swift package describe`, or `--source-dir` in custom mode; apply `--exclude` | shared | `Analyzer.swift` |
-| 2 | Discover declarations with SwiftSyntax and decide how each layer will analyse them (or why they are skipped, including bodies that only log: `AridDetection.swift`); with `--since`, keep only declarations that overlap changed lines | shared | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `ClosureUnits.swift`, `AridDetection.swift`, `GitDiff.swift` |
+| 2 | Discover declarations with SwiftSyntax and decide how each layer will analyse them (or why they are skipped, including bodies that only log: `AridDetection.swift`); with `--since`, keep only declarations that overlap changed lines | shared | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `ClosureUnits.swift`, `ResultMutants.swift`, `AridDetection.swift`, `GitDiff.swift` |
 | 3 | Copy the project to `<package>/.build/test-effectiveness/project` and prepare the copy for the layers that need it | shared | `Analyzer.swift`, `SchemataRewriter.swift` |
 | 4 | Build **once** (`swift build --build-tests --enable-index-store`, or the custom build command). A Swift package is not built when nothing in the copy changed since it was built | shared | `Analyzer.swift`, `RunCache.swift` |
 | 5 | Static reference layer: read the build's index to fill the referenced column | layer | `References.swift` |
@@ -219,6 +219,23 @@ var handler: Handler<State, Event> {
 - **Executed is the closure's own.** The switch records the closure when it runs, and in custom mode llvm-cov has a function of its own for a closure, whose region starts at the closure's `{` (`MethodInfo.bodyStart`).
 - **The index knows the enclosing method.** It has no symbol for a closure, so the referenced column of a closure is `unknown`. `DiscoveredMethod.indexed` is the method the closure is written in: whether that method was compiled says whether the closure was, and its tests are the ones selected when the build recorded nothing.
 
+#### Return mutants
+
+With `--return-mutants`, `ResultMutants` looks in a body for its `return`s and for a statement that does something else; see [What a body returns](docs/methods/extreme-mutation.md#what-a-body-returns) for which bodies qualify. For each value the return type has, the body gets a `resultOnly` mutation, and `DiscoveredMethod.resultSites` keeps the offsets of the `return`s that give something else. The mutants are mutants of the method like the others, so they are assigned, run and classified as those are:
+
+```swift
+mutating func withdraw(_ amount: Int) -> Bool { switch __steActiveMutant { case 1: return true; case 2: return false; case -2: __steReached(1); default: break };
+    if amount > balance { if __steActiveMutant == 3 { return true }; return false }
+    balance -= amount
+    if __steActiveMutant == 4 { return false }; return true
+}
+```
+
+- **A statement in front of each `return`.** The mutants that leave the body stand in the switch at its start; a `resultOnly` mutant stands where the value is returned. A `return` is always a statement of a block, so another statement in front of it on its line is valid wherever it is.
+- **Never the only mutants.** A body that qualifies is more than one `return`, so the mutants that leave at the start are there as well. The switch at the start is what records that the method ran, and the first mutant is what tests are selected by.
+- **With case mutants, in the cases.** `SwitchCases` asks `ResultMutants` for the statements of each case, and `DiscoveredCase.resultSites` keeps the offsets. The body of such a method gets no `resultOnly` mutation: every `return` of it at once would say less than each case.
+- **The report says a survivor once.** Where the mutant that leaves at the start survived with the same value, `Reporter.advised` leaves the `resultOnly` survivor out of the advice; the JSON report has both.
+
 ## Tests
 
 - Unit tests cover discovery, mutation operators, the rewriter, classification and reporting.
@@ -228,7 +245,7 @@ var handler: Handler<State, Event> {
 - `Tests/Fixtures/OrderDependentProject` has a test scope that passes only after another test ran. The integration test checks that it is reported under *Tests that fail alone* and not selected.
 - `Tests/Fixtures/SharedStateProject` has state that outlives a test: a value that is computed once, and a test that passes only once in a process. The integration test checks that the resident host leaves the mutants this affects to processes of their own, and that the outcomes are those of a process for every run.
 - `Tests/Fixtures/SwitchProject` has methods whose logic is a switch, each `tested` by the mutants of its whole body or not analysed at all. The integration test checks which cases `--case-mutants` reports.
-- `Tests/Fixtures/ClosureProject` has logic that is written as closures, in methods that are not analysed themselves. The integration test checks what `--closure` reports for the closures and for the cases of their switches.
+- `Tests/Fixtures/ClosureProject` has logic that is written as closures, in methods that are not analysed themselves. The integration tests check what `--closure` reports for the closures and for the cases of their switches, and what `--return-mutants` reports for a handler and a method that change state and return a value.
 - `Tests/Fixtures/EdgeCases` collects constructs that must still compile after rewriting: `if`/`switch` expressions, result builders, `some View` outside a result builder, `throws`, actors, `defaultIsolation(MainActor)`, and more. Add a case here when changing the rewriter.
 
 ## Adding a method

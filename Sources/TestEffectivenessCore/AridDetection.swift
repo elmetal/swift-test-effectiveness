@@ -39,7 +39,7 @@ public struct AridDetector: Sendable {
         !statements.isEmpty && statements.allSatisfy(isArid)
     }
 
-    private func isArid(_ item: CodeBlockItemSyntax) -> Bool {
+    func isArid(_ item: CodeBlockItemSyntax) -> Bool {
         switch item.item {
         case .expr(let expr):
             return isArid(expr)

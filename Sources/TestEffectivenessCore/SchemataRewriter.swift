@@ -120,9 +120,22 @@ public enum SchemataRewriter {
                 ),
             ]
         }
-        var result = [Insertion(offset: method.bodyContentStart, text: mutantSwitch(mutants))]
+        // The mutants that leave the body at its start; the others stand at its `return`s.
+        let leaving = mutants.filter { !$0.mutation.isResultOnly }
+        var result = leaving.isEmpty ? [] : [Insertion(offset: method.bodyContentStart, text: mutantSwitch(leaving))]
         result += method.implicitReturnInsertions.map { Insertion(offset: $0, text: "return ") }
+        result += resultInsertions(mutants, sites: method.resultSites)
         return result
+    }
+
+    /// In front of each `return` a mutant replaces: the same `return` with the mutant's value.
+    private static func resultInsertions(_ mutants: [Mutant], sites: [String: [Int]]) -> [Insertion] {
+        mutants.flatMap { mutant -> [Insertion] in
+            guard case .resultOnly(let expression) = mutant.mutation else { return [] }
+            return (sites[expression] ?? []).map { offset in
+                Insertion(offset: offset, text: "if \(switchName) == \(mutant.id) { return \(expression) }; ")
+            }
+        }
     }
 
     /// The mutants of each case that has some, at its start; they also record that the case ran.
@@ -147,13 +160,14 @@ public enum SchemataRewriter {
                 continue
             }
             // `fallthrough` has to stand in the case itself, not in the switch of the mutants.
-            let returning = mutants.filter { !$0.mutation.isOtherCase }
+            let returning = mutants.filter { !$0.mutation.isOtherCase && !$0.mutation.isResultOnly }
             var text = returning.isEmpty ? "" : mutantSwitch(returning)
             for mutant in mutants where mutant.mutation.isOtherCase {
                 let statement = discovered.otherCaseStatement ?? mutant.mutation.replacementStatement
                 text += " if __steMutantIs(\(mutant.id)) { \(statement) };"
             }
             result.append(Insertion(offset: discovered.contentStart, text: text))
+            result += resultInsertions(mutants, sites: discovered.resultSites)
         }
         return result
     }

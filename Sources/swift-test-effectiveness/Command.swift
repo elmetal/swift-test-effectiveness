@@ -53,6 +53,9 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Flag(help: "Also mutate each case of a switch that a method ends with, to find the cases no test verifies.")
     var caseMutants = false
 
+    @Flag(help: "Also replace only what a method returns, where it does something before it returns: its statements run, and each `return` gives the simplest value. Finds results no test checks behind side effects that tests do check. With --case-mutants, for each case.")
+    var returnMutants = false
+
     @Option(name: .customLong("default-value"), help: ArgumentHelp("Return this expression as the mutant of methods whose return type is written as this type, e.g. 'Money=.zero' (repeatable; several values for a type are a mutant each). The type is the whole type, its name without generic arguments, or the last component of that name.", valueName: "type=expression"))
     var defaultValues: [String] = []
 
@@ -165,7 +168,8 @@ struct SwiftTestEffectiveness: ParsableCommand {
                 arid: arid ? AridDetector(additionalCalls: aridCalls) : nil,
                 caseMutants: caseMutants,
                 defaultValues: try DefaultValues(parsing: defaultValues),
-                closures: try ClosureUnits(parsing: closures)
+                closures: try ClosureUnits(parsing: closures),
+                returnMutants: returnMutants
             ),
             changedSince: since,
             excludePathSubstrings: excludes,
