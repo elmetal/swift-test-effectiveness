@@ -180,6 +180,14 @@ enum SwitchCases {
         return expression(of: only)
     }
 
+    /// Whether a body does nothing: it is empty, or all it has are `return`s without a value.
+    static func returnsAtOnce(_ statements: CodeBlockItemListSyntax) -> Bool {
+        statements.allSatisfy { item in
+            guard case .stmt(let stmt) = item.item, let returned = stmt.as(ReturnStmtSyntax.self) else { return false }
+            return returned.expression == nil
+        }
+    }
+
     private static func expression(of item: CodeBlockItemSyntax) -> ExprSyntax? {
         switch item.item {
         case .expr(let expr): expr

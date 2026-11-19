@@ -3,12 +3,14 @@ import Testing
 
 struct MethodDiscoveryTests {
     private func discover(
-        _ source: String, path: String = "Sources/A/File.swift", throwMutants: Bool = false, defaultValues: [String] = []
+        _ source: String, path: String = "Sources/A/File.swift", throwMutants: Bool = false, arid: Bool = true,
+        defaultValues: [String] = []
     ) -> [DiscoveredMethod] {
         MethodDiscovery.discover(
             source: source, relativePath: path,
             options: DiscoveryOptions(
-                includeThrowMutants: throwMutants, defaultValues: try! DefaultValues(parsing: defaultValues)
+                includeThrowMutants: throwMutants, arid: arid ? AridDetector() : nil,
+                defaultValues: try! DefaultValues(parsing: defaultValues)
             )
         )
     }
@@ -356,7 +358,7 @@ struct MethodDiscoveryTests {
         func d() -> Int? { .none }
         func e() -> [Int] { [1] }
         func f() -> Int? { fatalError() }
-        func g() {}
+        func g() { reset() }
         var body: some View { EmptyView() }
         """)
         #expect(methods.map(\.decision) == [
@@ -390,5 +392,38 @@ struct MethodDiscoveryTests {
         let methods = discover("func a() throws -> Int? { nil }", throwMutants: true)
         #expect(methods.map(\.decision) == [.mutate([.throwError])])
         #expect(methods.map(\.implicitReturnInsertions.count) == [1])
+    }
+
+    // MARK: - A body that does nothing
+
+    /// The empty-body mutant would be the body as it is.
+    @Test func aBodyThatDoesNothingIsNotAnalyzed() {
+        let methods = discover("""
+        func a() {}
+        func b() -> Void {
+            // Nothing to do yet.
+        }
+        func c() async throws {}
+        func d() { reset() }
+        func e() { if check() { return } }
+        func f() { _ = 1 }
+        """)
+        let nothing = MutationOperators.Decision.skip(reason: "body does nothing, like its mutant")
+        #expect(methods.map(\.decision) == [
+            nothing, nothing, nothing, .mutate([.emptyBody]), .mutate([.emptyBody]), .mutate([.emptyBody]),
+        ])
+    }
+
+    /// A `return` without a value is arid as well, which is the reason given unless that is off.
+    @Test func aBodyThatOnlyReturnsDoesNothing() {
+        let source = "func a() { return }"
+        #expect(discover(source).map(\.decision) == [.skip(reason: AridDetector.skipReason)])
+        #expect(discover(source, arid: false).map(\.decision) == [.skip(reason: "body does nothing, like its mutant")])
+    }
+
+    /// Throwing instead is something a test can detect.
+    @Test func theThrowMutantOfABodyThatDoesNothingStays() {
+        let methods = discover("func a() throws {}", throwMutants: true)
+        #expect(methods.map(\.decision) == [.mutate([.throwError])])
     }
 }
