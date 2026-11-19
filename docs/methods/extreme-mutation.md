@@ -87,7 +87,7 @@ Not analyzed (2)
   → To analyze the methods that return a type without a simplest value, give the type one with `--default-value TYPE=EXPRESSION`: `Severity` (1 method) and `Tint` (1 method).
 ```
 
-A type is named as `--default-value` takes it: without its generic arguments (`Box` for `Box<Int>`). The line is a list of candidates, not of types that have such a value: a generic type parameter (`T`) is in it as well, and has none.
+A type is named as `--default-value` takes it: without its generic arguments (`Box` for `Box<Int>`). The line is a list of candidates, not of types that have such a value: a generic type parameter (`T`) is in it as well, and has none. A method around a closure that `--closure` [names](#closures) is not counted: its logic is analysed as the closure.
 
 - The expression is written into every method that returns the type, so it has to compile in all of them: a leading dot (`.zero`) or an initializer (`Money(cents: 0)`) rather than a local name.
 - Return types are compared as they are written, because the tool does not resolve types. `Money=…` matches `Money`, `Shop.Money` and `Money<Yen>`. `Shop.Money=…` and `Money<Yen>=…` are more specific, and win over `Money=…`. The whole type can be named as well (`'Result<Int, Error>=.success(0)'`, `'(Int, Int)=(0, 0)'`). A type alias is another name and needs a value of its own. `Money?` and `[Money]` keep the rules of the table.
@@ -231,7 +231,7 @@ Partially tested (1)
 - **The name.** Calls are compared as they are written, because the tool does not resolve names: by the last components of what is called. `subscribe` matches `subscribe { }`, `store.subscribe { }` and `.subscribe { }`; `store.subscribe` matches only calls that end with both. Generic arguments are not part of the name (`Handler<State, Event> { }` is `Handler`), and `.init { }` is `init`. When several names match a call, the one with the most components gives the type.
 - **Which closures.** The trailing closure of the call (the first one, when there are several), in the body of a function or a computed property that the tool finds. A closure inside another is found as well. Closures elsewhere (the initial value of a stored property, an initializer, top-level code) are not.
 - **A closure that only returns the value** (`{ _, _ in .none }` with `--default-value 'Command=.none'`) or does nothing (`{ _ in }`) has no mutant a test could detect, [like such a method](#a-body-that-only-returns-a-value), and is listed under *Not analyzed*.
-- **The method around it** is analysed as before. Where it only makes the closure, it stays under *Not analyzed* for its return type.
+- **The method around it** is analysed as before. Where it only makes the closure, it stays under *Not analyzed* for its return type; the line that names types for `--default-value` leaves it out.
 - **Executed and referenced.** Whether tests execute the closure is found out for the closure itself. The [referenced](static-references.md) column is `unknown`: no test can refer to a closure, and the index has no symbol for one.
 
 ### Limits of closures

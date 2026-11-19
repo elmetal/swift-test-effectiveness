@@ -457,6 +457,11 @@ struct IntegrationTests {
             "Archive.idle, Handler { } (154): body only returns the value of its mutant (`return .none`)",
             "Recorder.mute(_:), subscribe { } (163): body does nothing, like its mutant",
         ])
+        // They only make the closures, so no value for their types is asked for.
+        #expect(Reporter.defaultValueHint(unnamed.skipped, analyzed: unnamed.methods.map(\.method))?.hasSuffix(
+            ": `Handler` (4 methods), `Rule` (2 methods) and `Job` (1 method)."
+        ) == true)
+        #expect(Reporter.defaultValueHint(report.skipped, analyzed: report.methods.map(\.method)) == nil)
         let closures = report.methods.filter { $0.method.kind == .closure }
         let summary = closures.map { result in
             "\(result.method.name) (\(result.method.declarationStart.line)): \(result.classification.rawValue) "

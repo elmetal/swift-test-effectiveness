@@ -226,6 +226,6 @@ struct SwiftTestEffectiveness: ParsableCommand {
         let caseMutants = methods.reduce(0) { $0 + $1.cases.reduce(0) { $0 + $1.mutations.count } }
         let ofCases = caseMutants > 0 ? " and \(caseMutants) of their cases" : ""
         print("\(methods.count) methods, \(methods.reduce(0) { $0 + $1.mutations.count }) mutants\(ofCases), \(skipped.count) skipped")
-        if let hint = Reporter.defaultValueHint(skipped) { print(hint) }
+        if let hint = Reporter.defaultValueHint(skipped, analyzed: methods.map(\.info)) { print(hint) }
     }
 }

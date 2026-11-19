@@ -149,7 +149,7 @@ public enum Reporter {
             for skipped in report.skipped {
                 out += "  \(location(skipped.method))  \(skipped.method.name) — \(skipped.reason)\n"
             }
-            if let hint = defaultValueHint(report.skipped) { out += "  → \(hint)\n" }
+            if let hint = defaultValueHint(report.skipped, analyzed: report.methods.map(\.method)) { out += "  → \(hint)\n" }
         }
         if report.methods.isEmpty && report.skipped.isEmpty {
             out += "\nNo methods found.\n"
@@ -204,7 +204,7 @@ public enum Reporter {
             for skipped in report.skipped {
                 out += "- `\(skipped.method.name)` — \(skipped.reason) (`\(location(skipped.method))`)\n"
             }
-            if let hint = defaultValueHint(report.skipped) { out += "\n\(hint)\n" }
+            if let hint = defaultValueHint(report.skipped, analyzed: report.methods.map(\.method)) { out += "\n\(hint)\n" }
             out += "\n</details>\n"
         }
         return out
@@ -251,10 +251,24 @@ public enum Reporter {
 
     /// What to do about the methods that are not analyzed for their return type: the user can
     /// name its simplest value. The types that most methods return come first.
-    public static func defaultValueHint(_ skipped: [SkippedMethod]) -> String? {
+    ///
+    /// A method around a closure that is a method of its own (`--closure`) is not counted: the
+    /// user had its logic analyzed as the closure, and a value for the type that holds the
+    /// closure would say nothing about it.
+    ///
+    /// - Parameter analyzed: the methods that are analyzed; the closures are among them and
+    ///   among `skipped`.
+    public static func defaultValueHint(_ skipped: [SkippedMethod], analyzed: [MethodInfo] = []) -> String? {
+        let closures = (analyzed + skipped.map(\.method)).filter { $0.kind == .closure }
         var counts: [String: Int] = [:]
-        for method in skipped {
-            if let type = DefaultValues.typeToName(in: method.reason) { counts[type, default: 0] += 1 }
+        for skip in skipped {
+            let method = skip.method
+            guard let type = DefaultValues.typeToName(in: skip.reason) else { continue }
+            let makesAClosure = method.kind != .closure && closures.contains { closure in
+                closure.file == method.file && method.declarationStart <= closure.declarationStart
+                    && closure.declarationEnd <= method.declarationEnd
+            }
+            if !makesAClosure { counts[type, default: 0] += 1 }
         }
         guard !counts.isEmpty else { return nil }
         let types = counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
