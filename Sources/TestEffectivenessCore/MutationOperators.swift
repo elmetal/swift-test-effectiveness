@@ -53,10 +53,9 @@ public enum MutationOperators {
             }
             // Every `return` of a `some` type has the same concrete type: a value of another type
             // cannot be returned in front of the body.
-            guard opaque.someOrAnySpecifier.tokenKind == .keyword(.any), !isResultBuilder,
-                  let mutations = defaults.mutations(for: type)
-            else { return .skip(reason: "\(unsupportedReturnType) `\(type.trimmedDescription)`") }
-            return .mutate(mutations)
+            guard opaque.someOrAnySpecifier.tokenKind == .keyword(.any) else {
+                return .skip(reason: "\(unsupportedReturnType) `\(type.trimmedDescription)`")
+            }
         }
 
         if isResultBuilder {
@@ -190,6 +189,24 @@ public struct DefaultValues: Equatable, Sendable {
             if let expressions = values[key] { return expressions.map { .returnValue($0) } }
         }
         return nil
+    }
+
+    /// The type to give a value for, when `reason` is why a method is not analyzed and a value
+    /// would make it a target: the name of its return type without generic arguments, or the
+    /// whole type when it is not a name. `nil` for any other reason, and for a type with `some`
+    /// in it, which takes no value.
+    static func typeToName(in reason: String) -> String? {
+        let prefix = "\(MutationOperators.unsupportedReturnType) `"
+        guard reason.hasPrefix(prefix), reason.hasSuffix("`") else { return nil }
+        var parser = Parser(String(reason.dropFirst(prefix.count).dropLast()))
+        let type = TypeSyntax.parse(from: &parser)
+        guard !type.hasError,
+              !type.tokens(viewMode: .sourceAccurate).contains(where: { $0.tokenKind == .keyword(.some) })
+        else { return nil }
+        if type.is(IdentifierTypeSyntax.self) || type.is(MemberTypeSyntax.self) {
+            return MutationOperators.baseName(of: type)
+        }
+        return type.trimmedDescription.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     /// The tokens of `source` when it is one expression, to compare it with another as code:

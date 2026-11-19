@@ -149,6 +149,7 @@ public enum Reporter {
             for skipped in report.skipped {
                 out += "  \(location(skipped.method))  \(skipped.method.name) — \(skipped.reason)\n"
             }
+            if let hint = defaultValueHint(report.skipped) { out += "  → \(hint)\n" }
         }
         if report.methods.isEmpty && report.skipped.isEmpty {
             out += "\nNo methods found.\n"
@@ -203,6 +204,7 @@ public enum Reporter {
             for skipped in report.skipped {
                 out += "- `\(skipped.method.name)` — \(skipped.reason) (`\(location(skipped.method))`)\n"
             }
+            if let hint = defaultValueHint(report.skipped) { out += "\n\(hint)\n" }
             out += "\n</details>\n"
         }
         return out
@@ -242,6 +244,26 @@ public enum Reporter {
     static func executionNote(_ result: MethodResult, in report: AnalysisReport) -> String? {
         guard report.coverageAvailable, result.executed == .unknown else { return nil }
         return "executed: unknown (no coverage data for this method; it may not be run by any test at all)"
+    }
+
+    /// How many types `defaultValueHint` names.
+    static let hintedTypes = 5
+
+    /// What to do about the methods that are not analyzed for their return type: the user can
+    /// name its simplest value. The types that most methods return come first.
+    public static func defaultValueHint(_ skipped: [SkippedMethod]) -> String? {
+        var counts: [String: Int] = [:]
+        for method in skipped {
+            if let type = DefaultValues.typeToName(in: method.reason) { counts[type, default: 0] += 1 }
+        }
+        guard !counts.isEmpty else { return nil }
+        let types = counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+        var names = types.prefix(hintedTypes).map { "`\($0.key)` (\($0.value) \($0.value == 1 ? "method" : "methods"))" }
+        let more = types.count - names.count
+        if more > 0 { names.append("\(more) more \(more == 1 ? "type" : "types")") }
+        let list = names.count > 1 ? names.dropLast().joined(separator: ", ") + " and " + names.last! : names[0]
+        return "To analyze the methods that return a type without a simplest value, "
+            + "give the type one with `--default-value TYPE=EXPRESSION`: \(list)."
     }
 
     static func location(_ method: MethodInfo) -> String {

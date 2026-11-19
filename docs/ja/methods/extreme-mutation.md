@@ -60,6 +60,17 @@ swift-test-effectiveness --default-value 'Money=.zero' --default-value 'Tint=.gr
 
 `Money` を返すメソッドには、`return .zero` のミュータントが入ります。`--case-mutants` を指定すると、switch の各 case にも同じミュータントが入ります。別の case と同じことをさせるミュータントは使いません。
 
+どの型に値を指定すればよいかは、レポートに出ます。*Not analyzed* のメソッドの一覧の後に、最も単純な値がない戻り値型を、メソッドの数が多い順に挙げます。`--dry-run` は、何もビルドせずに同じ行を出力します。
+
+```
+Not analyzed (2)
+  Sources/Switches/Switches.swift:106  LoadState.tint — unsupported return type `Tint`
+  Sources/Switches/Switches.swift:117  LoadState.severity(threshold:) — unsupported return type `Severity`
+  → To analyze the methods that return a type without a simplest value, give the type one with `--default-value TYPE=EXPRESSION`: `Severity` (1 method) and `Tint` (1 method).
+```
+
+型は、`--default-value` に渡す形で挙げます。ジェネリック引数は付けません（`Box<Int>` は `Box`）。この行は候補の一覧で、そうした値がある型の一覧ではありません。ジェネリック型パラメータ（`T`）も挙がりますが、指定できる値はありません。
+
 - 式は、その型を返すすべてのメソッドに書き込まれるので、どのメソッドでもコンパイルできる必要がある。ローカルな名前ではなく、先頭がドットの式（`.zero`）やイニシャライザ（`Money(cents: 0)`）を使う。
 - 戻り値型は、書かれたとおりに比較する。このツールは型を解決しないためである。`Money=…` は `Money`、`Shop.Money`、`Money<Yen>` に一致する。`Shop.Money=…` と `Money<Yen>=…` はより具体的で、`Money=…` より優先される。型全体も指定できる（`'Result<Int, Error>=.success(0)'`、`'(Int, Int)=(0, 0)'`）。typealias は別の名前なので、別に値を指定する。`Money?` と `[Money]` には、表の規則がそのまま当たる。
 - 1 つの型に複数の値を指定すると、`true` と `false` のように、値ごとにミュータントができる。
@@ -175,7 +186,7 @@ JSON レポートでは、case を流したメソッドに `cases` が付きま�
 | `View` 以外の result builder | builder がどの構文をサポートするか分からない |
 | タプル、`Result`、ジェネリック型パラメータ、ユーザー定義型、`some View` 以外の opaque 型など | 汎用的なデフォルト値がない。opaque 型以外は、`--default-value` で [値を指定できる](#そのほかの戻り値型の値)。`--case-mutants` を指定すると、末尾が switch のメソッドは [case ごとに](#最も単純な値がない戻り値型) 解析する |
 
-対象外のメソッドは黙って捨てず、レポートの *Not analyzed* に理由付きで列挙します。
+対象外のメソッドは黙って捨てず、レポートの *Not analyzed* に理由付きで列挙します。デフォルト値がない戻り値型については、[どの型に値を指定すればよいか](#そのほかの戻り値型の値) も示します。
 
 ### arid な本体
 
