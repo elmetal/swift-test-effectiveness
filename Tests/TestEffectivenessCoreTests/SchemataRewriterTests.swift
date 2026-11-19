@@ -166,6 +166,12 @@ struct SchemataRewriterTests {
             + "func c() -> Int { switch __steActiveMutant { case 2: return 1; case -2: __steReached(2); default: break }; return 0 }\n")
     }
 
+    /// Without the empty-body mutant, only the mutant that throws stands in an empty body.
+    @Test func aBodyThatDoesNothingGetsNoSwitchOfItsOwn() {
+        #expect(rewrite("func a() {}; func b() { work() }")
+            == "func a() {}; func b() { switch __steActiveMutant { case 1: return; case -2: __steReached(1); default: break }; work() }\n")
+    }
+
     @Test func footerReadsEnvironmentVariable() {
         let output = SchemataRewriter.rewrite(
             source: "func f() {}",

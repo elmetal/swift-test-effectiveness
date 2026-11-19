@@ -61,8 +61,12 @@ A mutant that returns what the body returns already is the body as it is: no tes
 | `var delegate: Delegate? { nil }`, `func items() -> [Item] { [] }` | none: the method is listed under *Not analyzed* |
 | `func total() -> Money { .zero }` with `--default-value 'Money=.zero'` | none, likewise |
 | `func load() throws -> Item? { nil }` with `--throw-mutants` | `throw` only |
+| `func reset() {}`, a body of comments only, `{ return }` | none, likewise |
+| `func prepare() throws {}` with `--throw-mutants` | `throw` only |
 
 The body has to be one `return` or one expression, and the value a literal of the table above or the expression given with `--default-value` (compared as code: spacing and comments make no difference), as for [a case of a switch](#mutants-per-case). Anything else keeps its mutants: a body that does something before it returns, and another spelling of the value (`Optional.none`, `Money.zero` for `.zero`).
+
+The empty-body mutant is the body as it is where a body does nothing: it has no statement, or only `return` without a value.
 
 ### Values for other return types
 
@@ -226,7 +230,7 @@ Partially tested (1)
 - **The type.** A closure does not say what it returns, so the option does. The type follows the rules of every return type: the [table](#mutants-per-return-type), `Void` for a closure that returns nothing (`--closure 'subscribe=Void'`), and the values of `--default-value`. A closure that writes its return type (`{ item -> Bool in … }`) is taken at its word. An opaque type cannot be named.
 - **The name.** Calls are compared as they are written, because the tool does not resolve names: by the last components of what is called. `subscribe` matches `subscribe { }`, `store.subscribe { }` and `.subscribe { }`; `store.subscribe` matches only calls that end with both. Generic arguments are not part of the name (`Handler<State, Event> { }` is `Handler`), and `.init { }` is `init`. When several names match a call, the one with the most components gives the type.
 - **Which closures.** The trailing closure of the call (the first one, when there are several), in the body of a function or a computed property that the tool finds. A closure inside another is found as well. Closures elsewhere (the initial value of a stored property, an initializer, top-level code) are not.
-- **A closure that only returns the value** (`{ _, _ in .none }` with `--default-value 'Command=.none'`) has no mutant a test could detect, [like such a method](#a-body-that-only-returns-a-value), and is listed under *Not analyzed*.
+- **A closure that only returns the value** (`{ _, _ in .none }` with `--default-value 'Command=.none'`) or does nothing (`{ _ in }`) has no mutant a test could detect, [like such a method](#a-body-that-only-returns-a-value), and is listed under *Not analyzed*.
 - **The method around it** is analysed as before. Where it only makes the closure, it stays under *Not analyzed* for its return type.
 - **Executed and referenced.** Whether tests execute the closure is found out for the closure itself. The [referenced](static-references.md) column is `unknown`: no test can refer to a closure, and the index has no symbol for one.
 
@@ -246,7 +250,7 @@ Partially tested (1)
 | local functions and closures | outside per-method classification. `--closure` makes the closures of the calls it names [methods of their own](#closures) |
 | `@inlinable` / `@_transparent` / `@_alwaysEmitIntoClient` | the mutant switch cannot be reached from their bodies ([details](../../ARCHITECTURE.md#mutant-schemata)) |
 | declarations in `main.swift` | top-level code initialisation order |
-| methods whose body only returns the value of their only mutant (`{ nil }`, `{ [] }`) | the mutant would be the body as it is: no test could detect it ([details](#a-body-that-only-returns-a-value)) |
+| methods whose body does nothing (`{}`), or only returns the value of their only mutant (`{ nil }`, `{ [] }`) | the mutant would be the body as it is: no test could detect it ([details](#a-body-that-only-returns-a-value)) |
 | methods returning `Void` whose body only logs (unless `--no-arid`) | no test should assert on a log message ([arid bodies](#arid-bodies)) |
 | `some View` returned from a `rethrows` function | the local function that keeps the original body cannot be `rethrows` ([details](../../ARCHITECTURE.md#mutant-schemata)) |
 | an expression next to `#if` blocks that may all be compiled out | whether it is returned implicitly depends on the build configuration ([details](../../ARCHITECTURE.md#mutant-schemata)) |
@@ -275,7 +279,6 @@ The check is syntactic, so the receiver's type is not known: `logger.info(…)` 
 
 - Extreme mutation checks whether a method is verified *at all*, not whether it is verified *well*. `tested` is not a quality guarantee; it means there is no obvious hole. Use traditional mutation testing for finer-grained checks.
 - Methods with unsupported return types cannot be analysed (see [Not targeted](#not-targeted)), except with a value from `--default-value`, or case by case when they end with a switch (see [Cases of a switch](#cases-of-a-switch)).
-- A `Void` method with an empty body keeps its mutant, which is the body as it is: when a test runs the method, it is reported as `pseudo-tested`.
 - Logic written as closures is not analysed, except the closures of the calls `--closure` names (see [Closures](#closures)).
 - One test of one case of a switch detects every mutant of the whole body. Without `--case-mutants`, such a method is `tested` however few of its cases the tests check.
 

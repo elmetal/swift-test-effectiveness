@@ -293,15 +293,20 @@ public enum MethodDiscovery {
                     mutations.append(.throwError)
                     decision = .mutate(mutations)
                 }
-                // A body that only returns what a mutant returns: that mutant is the body as
-                // it is, and no test could detect it.
-                if case .mutate(let mutations) = decision, !isResultBuilder, opaqueBody == nil,
-                   let value = SwitchCases.returnedValue(of: statements) {
-                    let detectable = mutations.filter { !SwitchCases.isEquivalent($0, to: value) }
-                    if detectable.isEmpty, let equivalent = mutations.first {
-                        decision = .skip(reason: Self.onlyReturnsTheValueOfItsMutant(equivalent))
-                    } else {
-                        decision = .mutate(detectable)
+                // A mutant that is the body as it is could not be detected by any test.
+                if case .mutate(let mutations) = decision, !isResultBuilder, opaqueBody == nil {
+                    if let value = SwitchCases.returnedValue(of: statements) {
+                        // The body only returns what the mutant returns.
+                        let detectable = mutations.filter { !SwitchCases.isEquivalent($0, to: value) }
+                        if detectable.isEmpty, let equivalent = mutations.first {
+                            decision = .skip(reason: Self.onlyReturnsTheValueOfItsMutant(equivalent))
+                        } else {
+                            decision = .mutate(detectable)
+                        }
+                    } else if mutations.contains(.emptyBody), SwitchCases.returnsAtOnce(statements) {
+                        // The body is empty already.
+                        let detectable = mutations.filter { $0 != .emptyBody }
+                        decision = detectable.isEmpty ? .skip(reason: Self.doesNothing) : .mutate(detectable)
                     }
                 }
             }
@@ -370,6 +375,8 @@ public enum MethodDiscovery {
         static func onlyReturnsTheValueOfItsMutant(_ mutation: ExtremeMutation) -> String {
             "body only returns the value of its mutant (\(mutation.summary))"
         }
+
+        static let doesNothing = "body does nothing, like its mutant"
 
         static let conditionalImplicitReturn = "`#if` in the body decides whether its value is returned implicitly"
 

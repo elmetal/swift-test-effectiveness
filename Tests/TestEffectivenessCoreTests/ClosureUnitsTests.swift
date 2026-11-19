@@ -178,6 +178,21 @@ struct ClosureUnitsTests {
         ])
     }
 
+    /// A closure that ignores what it is called for has nothing a test could detect.
+    @Test func aClosureThatDoesNothingIsNotAnalyzed() {
+        let methods = discover("""
+        func f(feed: Feed) {
+            feed.subscribe { _ in }
+            feed.subscribe { _ in
+                // Not needed here.
+            }
+            feed.subscribe { self.lines.append($0) }
+        }
+        """, closures: ["subscribe=Void"])
+        let nothing = MutationOperators.Decision.skip(reason: "body does nothing, like its mutant")
+        #expect(methods.dropFirst().map(\.decision) == [nothing, nothing, .mutate([.emptyBody])])
+    }
+
     @Test func whatKeepsABodyFromTheMutantSwitchKeepsItsClosuresFromIt() {
         let inlinable = discover("@inlinable func f() { run { work() } }", closures: ["run=Void"])
         #expect(inlinable.map(\.decision) == Array(

@@ -59,3 +59,14 @@ import Testing
     var count = 0
     _ = Archive().idle.handle(&count, .received)
 }
+
+@Test func muteForgetsLines() {
+    let feed = Feed()
+    let recorder = Recorder()
+    recorder.record(feed)
+    feed.post("a")
+    recorder.mute(feed)
+    #expect(recorder.lines.isEmpty)
+    feed.post("b")
+    recorder.reset()
+}
