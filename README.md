@@ -64,7 +64,7 @@ Build from source and put the binary on your `PATH`:
 ```bash
 git clone https://github.com/elmetal/swift-test-effectiveness.git
 cd swift-test-effectiveness
-git checkout 0.0.1
+git checkout 0.0.3
 swift build -c release
 cp .build/release/swift-test-effectiveness /usr/local/bin/
 ```
