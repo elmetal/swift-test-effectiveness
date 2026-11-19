@@ -21,7 +21,7 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 | # | ステージ | 種類 | ファイル |
 |---|---|---|---|
 | 1 | ソースファイルを列挙する。`swift package describe` のテスト以外のターゲット、またはカスタムモードでは `--source-dir`。`--exclude` を適用する | 共通 | `Analyzer.swift` |
-| 2 | SwiftSyntax で宣言を発見し、各層がそれをどう解析するか（または対象外の理由）を決める。本体がログ出力だけの宣言もここで対象外にする（`AridDetection.swift`）。`--since` 指定時は、変更行と重なる宣言だけを残す | 共通 | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `AridDetection.swift`, `GitDiff.swift` |
+| 2 | SwiftSyntax で宣言を発見し、各層がそれをどう解析するか（または対象外の理由）を決める。本体がログ出力だけの宣言もここで対象外にする（`AridDetection.swift`）。`--since` 指定時は、変更行と重なる宣言だけを残す | 共通 | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `ClosureUnits.swift`, `AridDetection.swift`, `GitDiff.swift` |
 | 3 | プロジェクトを `<package>/.build/test-effectiveness/project` にコピーし、必要な層のためにコピーを準備する | 共通 | `Analyzer.swift`, `SchemataRewriter.swift` |
 | 4 | **1 回だけ** ビルドする（`swift build --build-tests --enable-index-store`、またはカスタムのビルドコマンド）。Swift パッケージでは、前回のビルドからコピーが変わっていなければビルドしない | 共通 | `Analyzer.swift`, `RunCache.swift` |
 | 5 | 静的参照層：ビルドが書き出したインデックスを読み、referenced 列を埋める | 層 | `References.swift` |
@@ -213,6 +213,23 @@ func tint(for state: LoadState) -> Tint {
 
 case のミュータントは、本体全体のミュータントの後に、`runMutants` の 2 巡目として流します。どのメソッドの case を流すかは、1 巡目の結果で決まります。`CaseResult` が case ごとの結果を持ち、`Classifier.classify(_:cases:)` がメソッドの結果と合わせて分類します。
 
+#### クロージャ
+
+`--closure` を指定すると、`MethodDiscovery` は、記録する関数と getter の本体ごとに `ClosureFinder` を呼び、`ClosureUnits` が指定する呼び出しの trailing closure を求めます。一致する呼び出しは [クロージャ](docs/ja/methods/extreme-mutation.md#クロージャ) を参照してください。クロージャはそれぞれ 1 つの `DiscoveredMethod` になり、呼び出しに指定された戻り値型を使って、メソッドと同じように判定します。そのため、パイプラインの残りの部分はメソッドと区別しません。
+
+```swift
+var handler: Handler<State, Event> {
+    Handler { state, event in switch __steActiveMutant { case 1: return .none; case -2: __steReached(1); default: break };
+        state.unread += 1
+        return .save
+    }
+}
+```
+
+- **ミュータントはクロージャのシグネチャの後に置く。** `bodyContentStart` は `in` の終わりで、シグネチャがないクロージャでは `{` の終わりである。クロージャが暗黙に返す式には、メソッドと同じように `return` を付ける。
+- **実行はクロージャ自身のものを使う。** switch が、クロージャが実行されたことを記録する。カスタムモードでは、llvm-cov がクロージャを 1 つの関数として扱い、その領域はクロージャの `{` から始まる（`MethodInfo.bodyStart`）。
+- **インデックスが知っているのは、クロージャを囲むメソッドである。** インデックスにはクロージャのシンボルがないので、クロージャの参照の列は `unknown` になる。`DiscoveredMethod.indexed` は、クロージャが書かれているメソッドである。クロージャがコンパイルされたかどうかは、そのメソッドがコンパイルされたかどうかで判断する。ビルドが何も記録しなかったときは、そのメソッドのテストを選ぶ。
+
 ## テスト
 
 - ユニットテストは、宣言の発見、ミューテーション演算子、書き換え、分類、レポートを対象にする。
@@ -222,6 +239,7 @@ case のミュータントは、本体全体のミュータントの後に、`ru
 - `Tests/Fixtures/OrderDependentProject` は、ほかのテストが先に流れたときだけ通るテストスコープを持つパッケージ。統合テストで、それが *Tests that fail alone* として報告され、テスト選択に使われないことを確認する。
 - `Tests/Fixtures/SharedStateProject` は、テストをまたいで残る状態を持つパッケージ。一度だけ計算される値と、1 つのプロセスで 1 回しか通らないテストがある。統合テストで、その影響を受けるミュータントを常駐ホストが専用のプロセスに任せることと、結果が実行のたびにプロセスを起動した場合と同じになることを確認する。
 - `Tests/Fixtures/SwitchProject` は、ロジックが switch になっているメソッドを集めたパッケージ。どれも本体全体のミュータントでは `tested` になるか、解析対象外になる。統合テストで、`--case-mutants` がどの case を報告するかを検証する。
+- `Tests/Fixtures/ClosureProject` は、ロジックがクロージャとして書かれているパッケージ。クロージャを作るメソッド自体は解析対象外になる。統合テストで、`--closure` がクロージャとその switch の case について何を報告するかを検証する。
 - `Tests/Fixtures/EdgeCases` は、if/switch 式、result builder、result builder 外の `some View`、`throws`、actor、`defaultIsolation(MainActor)` など、書き換え後もコンパイルできなければならない構文の集まり。書き換え処理を変更するときはここにケースを足す。
 
 ## 手法を追加するとき

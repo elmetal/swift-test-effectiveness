@@ -244,7 +244,7 @@ public final class Analyzer: @unchecked Sendable {
         }
         try prepareWorkspace(assignments, cases: caseAssignments)
         try build()
-        let references = loadReferences(methods.map(\.info))
+        let references = loadReferences(methods.map(\.indexed))
         let (baselineDuration, executed, baselineOutput) = try runBaseline()
         log(String(format: "Baseline passed in %.1fs.", baselineDuration))
         var runTimeout = RunTimeout(
@@ -296,7 +296,7 @@ public final class Analyzer: @unchecked Sendable {
             case .recorded(let ids):
                 reached = ExecutedMethods.wasRecorded(ids, mutants: mutants, cases: cases)
                 // The index has a definition for every compiled method.
-                compiledOut = reached != true && references?.status[method.info] == .unknown
+                compiledOut = reached != true && references?.status[method.indexed] == .unknown
             case nil:
                 reached = nil
                 compiledOut = false
@@ -332,7 +332,7 @@ public final class Analyzer: @unchecked Sendable {
         for (methodIndex, (method, mutants, reached, _)) in planned.enumerated()
         where reached != false && !mutants.isEmpty {
             // What the scopes executed when the build recorded it; what the index says otherwise.
-            let reaching = recorded.map { $0.scopes[mutants[0].id] ?? [] } ?? indexReach?[method.info]
+            let reaching = recorded.map { $0.scopes[mutants[0].id] ?? [] } ?? indexReach?[method.indexed]
             let tests = selectable.flatMap { all in
                 TestSelection.tests(reaching: reaching.map { $0.intersection(all) }, all: all)
             }
@@ -413,7 +413,8 @@ public final class Analyzer: @unchecked Sendable {
             let mutantResults = outcomes.map { $0! }
             return MethodResult(
                 method: plan.method.info,
-                referenced: references?.status[plan.method.info] ?? .unknown,
+                // No test can refer to a closure, and the index has no symbol for one.
+                referenced: plan.method.enclosing == nil ? references?.status[plan.method.info] ?? .unknown : .unknown,
                 executed: ExecutionStatus.resolve(
                     coverage: plan.reached, mutants: mutantResults + (cases ?? []).flatMap(\.mutants)
                 ),

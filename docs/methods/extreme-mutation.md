@@ -169,6 +169,57 @@ In the JSON report a method whose cases ran has `cases`: for each case with muta
 - The statements of another case are moved as text. The conditions above are checked on the syntax alone; if statements do not compile in their new place, the schema does not build and the analysis stops. Run without `--case-mutants` then, and please report the construct.
 - A switch in the middle of a body, in a result builder or in a method returning `some View` is not analysed case by case.
 
+## Closures
+
+Off by default; `--closure` names the calls whose closures are analysed.
+
+Some logic is not written as methods. A handler that is passed to the type that calls it for every event is a closure, and the method it is written in only makes it:
+
+```swift
+var handler: Handler<State, Event> {
+    Handler { state, event in
+        switch event {
+        case .received:
+            state.unread += 1
+            return .none
+        case .opened:
+            state.unread = 0
+            return .save
+        case .muted:
+            state.isMuted = true
+            return .save
+        }
+    }
+}
+```
+
+`handler` returns a `Handler`, which has no simplest value, and a closure is not a method: nothing of this is analysed. `--closure` names the call and the type its closure returns:
+
+```sh
+swift-test-effectiveness --closure 'Handler=Command' --default-value 'Command=.none' --case-mutants
+```
+
+The trailing closure of every call to `Handler` is then a method of its own. It is reported under the name of the method it is written in and the name of the call, gets the mutants of the type given for it, and with `--case-mutants` each case of the switch it ends with is mutated as well:
+
+```
+Partially tested (1)
+  Sources/Closures/Closures.swift:42  Inbox.handler, Handler { } -> Command
+    detected: `return .none`
+    → In `case .opened` (line 47), `Inbox.handler, Handler { }` can `return .none` without any test failing. Add a test of this case that asserts the result.
+    → No test runs `case .muted` (line 50) of `Inbox.handler, Handler { }`. Add a test of this case.
+```
+
+- **The type.** A closure does not say what it returns, so the option does. The type follows the rules of every return type: the [table](#mutants-per-return-type), `Void` for a closure that returns nothing (`--closure 'subscribe=Void'`), and the values of `--default-value`. A closure that writes its return type (`{ item -> Bool in … }`) is taken at its word. An opaque type cannot be named.
+- **The name.** Calls are compared as they are written, because the tool does not resolve names: by the last components of what is called. `subscribe` matches `subscribe { }`, `store.subscribe { }` and `.subscribe { }`; `store.subscribe` matches only calls that end with both. Generic arguments are not part of the name (`Handler<State, Event> { }` is `Handler`), and `.init { }` is `init`. When several names match a call, the one with the most components gives the type.
+- **Which closures.** The trailing closure of the call (the first one, when there are several), in the body of a function or a computed property that the tool finds. A closure inside another is found as well. Closures elsewhere (the initial value of a stored property, an initializer, top-level code) are not.
+- **The method around it** is analysed as before. Where it only makes the closure, it stays under *Not analyzed* for its return type.
+- **Executed and referenced.** Whether tests execute the closure is found out for the closure itself. The [referenced](static-references.md) column is `unknown`: no test can refer to a closure, and the index has no symbol for one.
+
+### Limits of closures
+
+- The mutants are statements at the start of the closure, so a closure of one expression becomes one of several statements. Its type then has to be known from the call, not from its body, and a closure that a result builder transforms (`VStack { … }`) must not be named. If the schema does not build, the analysis stops: run without that name.
+- Every call with the name is taken, whatever it calls: a name that two functions share needs more components, or cannot be used.
+
 ## Not targeted
 
 | Declaration | Reason |
@@ -177,7 +228,7 @@ In the JSON report a method whose cases ran has `cases`: for each case with muta
 | methods returning `Never` | same |
 | accessors other than `get` (`set`, `willSet`, `didSet`, `_modify`) | same |
 | protocol requirements (no body) | nothing to replace; default implementations in protocol extensions *are* targeted |
-| local functions and closures | outside per-method classification |
+| local functions and closures | outside per-method classification. `--closure` makes the closures of the calls it names [methods of their own](#closures) |
 | `@inlinable` / `@_transparent` / `@_alwaysEmitIntoClient` | the mutant switch cannot be reached from their bodies ([details](../../ARCHITECTURE.md#mutant-schemata)) |
 | declarations in `main.swift` | top-level code initialisation order |
 | methods returning `Void` whose body only logs (unless `--no-arid`) | no test should assert on a log message ([arid bodies](#arid-bodies)) |
@@ -208,6 +259,7 @@ The check is syntactic, so the receiver's type is not known: `logger.info(…)` 
 
 - Extreme mutation checks whether a method is verified *at all*, not whether it is verified *well*. `tested` is not a quality guarantee; it means there is no obvious hole. Use traditional mutation testing for finer-grained checks.
 - Methods with unsupported return types cannot be analysed (see [Not targeted](#not-targeted)), except with a value from `--default-value`, or case by case when they end with a switch (see [Cases of a switch](#cases-of-a-switch)).
+- Logic written as closures is not analysed, except the closures of the calls `--closure` names (see [Closures](#closures)).
 - One test of one case of a switch detects every mutant of the whole body. Without `--case-mutants`, such a method is `tested` however few of its cases the tests check.
 
 ## Implementation

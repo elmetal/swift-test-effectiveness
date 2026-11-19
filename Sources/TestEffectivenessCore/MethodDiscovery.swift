@@ -24,6 +24,12 @@ public struct DiscoveredMethod: Sendable {
     /// The cases of the switch the body ends with, when they are mutated one by one (see
     /// `DiscoveredCase`); empty otherwise.
     public var cases: [DiscoveredCase] = []
+    /// For a closure (see `ClosureUnits`): the method whose body it is written in.
+    var enclosing: MethodInfo?
+
+    /// The declaration the index knows: a closure has no symbol of its own. It is compiled when
+    /// the method around it is, and the tests that reach that method are the ones that may run it.
+    var indexed: MethodInfo { enclosing ?? info }
 
     public var mutations: [ExtremeMutation] {
         if case .mutate(let mutations) = decision { return mutations }
@@ -59,23 +65,27 @@ public struct DiscoveryOptions: Sendable {
     public var caseMutants: Bool
     /// The values to return for the return types the user named.
     public var defaultValues: DefaultValues
+    /// The closures to analyze like methods, for the calls the user named.
+    public var closures: ClosureUnits
 
     public init(
         includeThrowMutants: Bool = false, arid: AridDetector? = AridDetector(), caseMutants: Bool = false,
-        defaultValues: DefaultValues = DefaultValues()
+        defaultValues: DefaultValues = DefaultValues(), closures: ClosureUnits = ClosureUnits()
     ) {
         self.includeThrowMutants = includeThrowMutants
         self.arid = arid
         self.caseMutants = caseMutants
         self.defaultValues = defaultValues
+        self.closures = closures
     }
 }
 
 /// Finds mutable methods in one Swift source file.
 ///
 /// Targets: functions with a body and computed-property getters declared at file scope or inside
-/// types/extensions. Not targeted: initializers, deinitializers, subscripts, accessors other than
-/// `get`, protocol requirements, local functions and closures.
+/// types/extensions, and in their bodies the trailing closures of the calls `ClosureUnits` names.
+/// Not targeted: initializers, deinitializers, subscripts, accessors other than `get`, protocol
+/// requirements, local functions and other closures.
 public enum MethodDiscovery {
     public static func discover(
         source: String, relativePath: String, options: DiscoveryOptions = .init()
@@ -236,7 +246,8 @@ public enum MethodDiscovery {
         private func record(
             decl: Syntax, name: String, kind: MethodInfo.Kind, attributes: [String],
             returnType: TypeSyntax?, isResultBuilder: Bool, canThrow: Bool, effects: Effects,
-            leftBrace: TokenSyntax, rightBrace: TokenSyntax, statements: CodeBlockItemListSyntax
+            leftBrace: TokenSyntax, rightBrace: TokenSyntax, statements: CodeBlockItemListSyntax,
+            closure: (signatureEnd: AbsolutePosition?, enclosing: MethodInfo, isConditionallyCompiled: Bool)? = nil
         ) {
             // An explicit `return` turns a result builder off, written or implied: the body is
             // then an ordinary one.
@@ -315,14 +326,34 @@ public enum MethodDiscovery {
             methods.append(DiscoveredMethod(
                 info: info,
                 decision: decision,
-                bodyContentStart: leftBrace.endPositionBeforeTrailingTrivia.utf8Offset,
+                // The statements of a closure start after the `in` of its signature.
+                bodyContentStart: (closure?.signatureEnd ?? leftBrace.endPositionBeforeTrailingTrivia).utf8Offset,
                 bodyContentEnd: rightBrace.positionAfterSkippingLeadingTrivia.utf8Offset,
                 implicitReturnInsertions: implicitReturnInsertions,
                 isResultBuilder: isResultBuilder,
                 opaqueBody: opaqueBody,
-                isConditionallyCompiled: ifConfigDepth > 0,
-                cases: cases
+                isConditionallyCompiled: ifConfigDepth > 0 || closure?.isConditionallyCompiled == true,
+                cases: cases,
+                enclosing: closure?.enclosing
             ))
+
+            // The closures of the body that are methods of their own. Those of a closure are
+            // found with it.
+            guard closure == nil, leftBrace.presence == .present, rightBrace.presence == .present else { return }
+            for found in ClosureFinder.closures(in: statements, units: options.closures) {
+                record(
+                    decl: Syntax(found.closure), name: "\(name), \(found.name) { }", kind: .closure,
+                    // What keeps the body from the mutant switch keeps its closures from it.
+                    attributes: attributes,
+                    returnType: found.returnType, isResultBuilder: false, canThrow: false, effects: Effects(),
+                    leftBrace: found.closure.leftBrace, rightBrace: found.closure.rightBrace,
+                    statements: found.closure.statements,
+                    closure: (
+                        found.closure.signature?.inKeyword.endPositionBeforeTrailingTrivia, info,
+                        found.isConditionallyCompiled
+                    )
+                )
+            }
         }
 
         static let conditionalImplicitReturn = "`#if` in the body decides whether its value is returned implicitly"

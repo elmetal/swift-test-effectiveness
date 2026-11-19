@@ -98,6 +98,8 @@ public struct MethodInfo: Codable, Hashable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case function
         case getter
+        /// The trailing closure of a call the user named (`--closure`).
+        case closure
     }
 
     /// Path relative to the analyzed project root.

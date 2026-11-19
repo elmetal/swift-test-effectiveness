@@ -56,6 +56,9 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Option(name: .customLong("default-value"), help: ArgumentHelp("Return this expression as the mutant of methods whose return type is written as this type, e.g. 'Money=.zero' (repeatable; several values for a type are a mutant each). The type is the whole type, its name without generic arguments, or the last component of that name.", valueName: "type=expression"))
     var defaultValues: [String] = []
 
+    @Option(name: .customLong("closure"), help: ArgumentHelp("Also analyze the trailing closure of calls to this function like a method that returns this type, e.g. 'Handler=Command' (repeatable). The name is the last components of what is called: 'subscribe' also matches 'store.subscribe { … }'.", valueName: "name=type"))
+    var closures: [String] = []
+
     @Flag(inversion: .prefixedNo, help: "Skip methods returning Void whose body only logs (print, os_log, logger.info(…), …).")
     var arid = true
 
@@ -126,6 +129,11 @@ struct SwiftTestEffectiveness: ParsableCommand {
         } catch {
             throw ValidationError("--default-value: \(error)")
         }
+        do {
+            _ = try ClosureUnits(parsing: closures)
+        } catch {
+            throw ValidationError("--closure: \(error)")
+        }
         let customOptions = [buildCommand, testCommand].compactMap { $0 }
         if !customOptions.isEmpty || !sourceDirectories.isEmpty {
             guard buildCommand != nil, testCommand != nil, !sourceDirectories.isEmpty else {
@@ -156,7 +164,8 @@ struct SwiftTestEffectiveness: ParsableCommand {
                 includeThrowMutants: throwMutants,
                 arid: arid ? AridDetector(additionalCalls: aridCalls) : nil,
                 caseMutants: caseMutants,
-                defaultValues: try DefaultValues(parsing: defaultValues)
+                defaultValues: try DefaultValues(parsing: defaultValues),
+                closures: try ClosureUnits(parsing: closures)
             ),
             changedSince: since,
             excludePathSubstrings: excludes,
