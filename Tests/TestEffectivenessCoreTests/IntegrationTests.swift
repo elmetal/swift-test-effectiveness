@@ -13,7 +13,7 @@ struct IntegrationTests {
     static let swift = ProcessInfo.processInfo.environment["STE_SWIFT"] ?? "swift"
 
     private func analyze(
-        _ fixture: String, throwMutants: Bool = false, caseMutants: Bool = false, defaultValues: [String] = [],
+        _ fixture: String, throwMutants: Bool = false, caseMutants: Bool = false, defaultValues: [String] = [], closures: [String] = [],
         testSelection: Bool = true,
         jobs: Int = 1, directLaunch: Bool = true, rerunSurvivors: Bool = false, residentHost: Bool = true,
         minimumTimeout: Double? = 120, workDirectory: URL? = nil,
@@ -27,7 +27,7 @@ struct IntegrationTests {
             buildSystem: .swiftPM(swiftExecutable: Self.swift, targets: [], testFilter: nil),
             discovery: DiscoveryOptions(
                 includeThrowMutants: throwMutants, caseMutants: caseMutants,
-                defaultValues: try DefaultValues(parsing: defaultValues)
+                defaultValues: try DefaultValues(parsing: defaultValues), closures: try ClosureUnits(parsing: closures)
             ),
             minimumTimeout: minimumTimeout,
             testSelection: testSelection,
@@ -428,6 +428,63 @@ struct IntegrationTests {
             "case .loaded(let count) where count > threshold: true `return Severity(level: 0)` killed",
             "case .failed(let message): true `return Severity(level: 0)` killed",
         ])
+    }
+
+    /// `Tests/Fixtures/ClosureProject`: logic written as closures. The methods that make them have
+    /// no mutant, so nothing is found until the closures are methods of their own.
+    @Test func closuresOfNamedCallsAreAnalyzedLikeMethods() throws {
+        let unnamed = try analyze("ClosureProject", caseMutants: true)
+        #expect(unnamed.methods.map(\.method.name) == ["Feed.subscribe(_:)", "Feed.post(_:)", "Recorder.record(_:)"])
+        #expect(unnamed.methods.allSatisfy { $0.classification == .tested })
+        #expect(unnamed.skipped.map(\.method.name) == [
+            "Inbox.handler", "Archive.handler()", "Archive.refreshing", "Rules.positive", "Rules.all(_:)",
+            "Archive.count(of:)",
+        ])
+
+        let report = try analyze(
+            "ClosureProject", caseMutants: true, defaultValues: ["Command=.none"],
+            closures: ["Handler=Command", ".init=Command", "subscribe=Void", "Rule=Bool", "allSatisfy=Bool", "Job=Int"]
+        )
+        // The methods are still not analyzed themselves.
+        #expect(report.skipped.map(\.method.name) == unnamed.skipped.map(\.method.name))
+        let closures = report.methods.filter { $0.method.kind == .closure }
+        let summary = closures.map { result in
+            "\(result.method.name) (\(result.method.declarationStart.line)): \(result.classification.rawValue) "
+                + result.mutants.map { "\($0.mutant.mutation.summary) \($0.outcome.rawValue)" }.joined(separator: ",")
+        }
+        #expect(summary == [
+            "Inbox.handler, Handler { } (42): partially-tested `return .none` killed",
+            "Archive.handler(), Handler { } (68): partially-tested `return .none` killed",
+            // One expression, returned implicitly.
+            "Archive.refreshing, init { } (79): tested `return .none` killed",
+            "Recorder.record(_:), subscribe { } (105): tested empty body killed",
+            // No test reads what it counts.
+            "Recorder.record(_:), subscribe { } (108): pseudo-tested empty body survived",
+            // Without a signature.
+            "Rules.positive, Rule { } (122): tested `return true` killed,`return false` killed",
+            // A closure and the closure in it.
+            "Rules.all(_:), Rule { } (126): tested `return true` killed,`return false` killed",
+            "Rules.all(_:), allSatisfy { } (127): tested `return true` killed,`return false` killed",
+            // `async throws`.
+            "Archive.count(of:), Job { } (143): tested `return 0` killed,`return 1` killed",
+        ])
+        // Whether tests execute a closure is known for the closure itself. No test can refer to it.
+        #expect(closures.allSatisfy { $0.referenced == .unknown && $0.executed == .executed })
+
+        func cases(_ line: Int) -> [String] {
+            (closures.first { $0.method.declarationStart.line == line }?.cases ?? []).map { result in
+                "\(result.label): \(result.executed.rawValue) \(result.mutants.map(\.outcome.rawValue).joined(separator: ","))"
+            }
+        }
+        // A switch statement. `case .ignored` returns the value already.
+        #expect(cases(42) == [
+            "case .received: true killed", "case .opened: true survived", "case .muted: false notRun",
+            "case .refreshed: true killed",
+        ])
+        // A switch expression. `default` returns the value already.
+        #expect(cases(68) == ["case .received: true killed", "case .opened: true survived"])
+        // The other methods are what they were.
+        #expect(report.methods.filter { $0.method.kind != .closure }.map(\.method.name) == unnamed.methods.map(\.method.name))
     }
 
     /// The schema of every construct in `Tests/Fixtures/EdgeCases` must compile and the baseline must pass.

@@ -169,6 +169,57 @@ JSON レポートでは、case を流したメソッドに `cases` が付きま�
 - 別の case の文はテキストとして移す。上の条件は構文だけで判定するので、移した先で文がコンパイルできないと、スキーマがビルドできず解析が止まる。その場合は `--case-mutants` を外して実行し、該当する構文を報告してほしい。
 - 本体の途中の switch、result builder の中の switch、`some View` を返すメソッドの中の switch は、case ごとには解析しない。
 
+## クロージャ
+
+既定ではオフです。`--closure` で、クロージャを解析する呼び出しを指定します。
+
+ロジックがメソッドとして書かれていないことがあります。イベントごとに呼び出す型へ渡すハンドラはクロージャで、それが書かれているメソッドはクロージャを作るだけです。
+
+```swift
+var handler: Handler<State, Event> {
+    Handler { state, event in
+        switch event {
+        case .received:
+            state.unread += 1
+            return .none
+        case .opened:
+            state.unread = 0
+            return .save
+        case .muted:
+            state.isMuted = true
+            return .save
+        }
+    }
+}
+```
+
+`handler` が返す `Handler` には最も単純な値がなく、クロージャはメソッドではないので、このコードは何も解析されません。`--closure` で、呼び出しの名前と、そのクロージャが返す型を指定します。
+
+```sh
+swift-test-effectiveness --closure 'Handler=Command' --default-value 'Command=.none' --case-mutants
+```
+
+これで、`Handler` の呼び出しの trailing closure が、1 つのメソッドとして扱われます。レポートには、クロージャが書かれているメソッドの名前と呼び出しの名前で出ます。ミュータントは、指定した型のものです。`--case-mutants` を指定すると、クロージャの末尾にある switch の各 case もミューテーションします。
+
+```
+Partially tested (1)
+  Sources/Closures/Closures.swift:42  Inbox.handler, Handler { } -> Command
+    detected: `return .none`
+    → In `case .opened` (line 47), `Inbox.handler, Handler { }` can `return .none` without any test failing. Add a test of this case that asserts the result.
+    → No test runs `case .muted` (line 50) of `Inbox.handler, Handler { }`. Add a test of this case.
+```
+
+- **型**：クロージャには戻り値型が書かれないので、オプションで指定する。型には、戻り値型の規則がそのまま当たる。[表](#戻り値型ごとのミュータント) の型、何も返さないクロージャの `Void`（`--closure 'subscribe=Void'`）、`--default-value` で指定した値である。戻り値型を書いているクロージャ（`{ item -> Bool in … }`）では、書かれた型を使う。opaque 型は指定できない。
+- **名前**：呼び出しは、書かれたとおりに比較する。このツールは名前を解決しないためである。比較するのは、呼び出し先の末尾の要素である。`subscribe` は `subscribe { }`、`store.subscribe { }`、`.subscribe { }` に一致する。`store.subscribe` は、末尾がその両方である呼び出しにだけ一致する。ジェネリック引数は名前に含めない（`Handler<State, Event> { }` は `Handler`）。`.init { }` は `init` である。複数の名前が一致するときは、要素の多い名前の型を使う。
+- **対象になるクロージャ**：ツールが見つける関数と computed property の本体にある、呼び出しの trailing closure（複数あるときは最初のもの）。クロージャの中のクロージャも対象になる。それ以外の場所（stored property の初期値、イニシャライザ、トップレベルコード）のクロージャは対象にならない。
+- **クロージャを囲むメソッド**：これまでどおり解析する。クロージャを作るだけのメソッドは、戻り値型が理由で *Not analyzed* に残る。
+- **実行と参照**：テストがクロージャを実行するかどうかは、クロージャ自身について調べる。[参照](static-references.md) の列は `unknown` になる。テストからクロージャを参照することはできず、インデックスにもクロージャのシンボルはないためである。
+
+### クロージャの限界
+
+- ミュータントはクロージャの先頭に入る文なので、式 1 つのクロージャは複数の文のクロージャになる。このとき、クロージャの型は本体からではなく、呼び出しから決まっている必要がある。result builder が変換するクロージャ（`VStack { … }`）は指定できない。スキーマがビルドできないと解析は止まるので、その名前を外して実行する。
+- その名前の呼び出しは、何を呼んでいてもすべて対象になる。2 つの関数が同じ名前のときは、名前の要素を増やして区別する。区別できなければ指定できない。
+
 ## 対象外
 
 | 対象 | 理由 |
@@ -177,7 +228,7 @@ JSON レポートでは、case を流したメソッドに `cases` が付きま�
 | `Never` を返すメソッド | 同上 |
 | `get` 以外のアクセサ（`set`, `willSet`, `didSet`, `_modify`） | 同上 |
 | プロトコル要件（本体なし） | 本体がない。プロトコル拡張のデフォルト実装は対象 |
-| ローカル関数・クロージャ | メソッド単位の分類から外れる |
+| ローカル関数・クロージャ | メソッド単位の分類から外れる。`--closure` で指定した呼び出しのクロージャは、[1 つのメソッドとして扱う](#クロージャ) |
 | `@inlinable` / `@_transparent` / `@_alwaysEmitIntoClient` | 本体からミュータントのスイッチを参照できない（[詳細](../../../ARCHITECTURE.ja.md#mutant-schemata)） |
 | `main.swift` 内の宣言 | トップレベルコードの初期化順の制約 |
 | 本体がログ出力だけの `Void` メソッド（`--no-arid` 指定時を除く） | ログメッセージをアサートすべきテストはない（[arid な本体](#arid-な本体)） |
@@ -208,6 +259,7 @@ JSON レポートでは、case を流したメソッドに `cases` が付きま�
 
 - 極端ミューテーションは「メソッドが何かしら検証されているか」を見るだけで、検証が十分かは見ない。`tested` は品質の保証ではなく、「明白な穴がない」ことを意味する。詳細な検証は通常のミューテーションテストで行う。
 - 戻り値型がサポート外のメソッドは解析できない（[対象外](#対象外) を参照）。ただし `--default-value` で値を指定した型は解析できる。また、末尾が switch のメソッドは、case ごとになら解析できる（[switch の case](#switch-の-case) を参照）。
+- クロージャとして書かれたロジックは解析できない。ただし、`--closure` で指定した呼び出しのクロージャは解析できる（[クロージャ](#クロージャ) を参照）。
 - switch のどれか 1 つの case をテストすれば、本体全体のミュータントは全て検出される。`--case-mutants` を指定しないと、こうしたメソッドは、テストが確かめている case がどれだけ少なくても `tested` になる。
 
 ## 実装

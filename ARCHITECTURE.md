@@ -21,7 +21,7 @@ The pipeline is a set of shared stages around a sequence of method layers, order
 | # | Stage | Kind | File |
 |---|---|---|---|
 | 1 | List source files: non-test targets from `swift package describe`, or `--source-dir` in custom mode; apply `--exclude` | shared | `Analyzer.swift` |
-| 2 | Discover declarations with SwiftSyntax and decide how each layer will analyse them (or why they are skipped, including bodies that only log: `AridDetection.swift`); with `--since`, keep only declarations that overlap changed lines | shared | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `AridDetection.swift`, `GitDiff.swift` |
+| 2 | Discover declarations with SwiftSyntax and decide how each layer will analyse them (or why they are skipped, including bodies that only log: `AridDetection.swift`); with `--since`, keep only declarations that overlap changed lines | shared | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `ClosureUnits.swift`, `AridDetection.swift`, `GitDiff.swift` |
 | 3 | Copy the project to `<package>/.build/test-effectiveness/project` and prepare the copy for the layers that need it | shared | `Analyzer.swift`, `SchemataRewriter.swift` |
 | 4 | Build **once** (`swift build --build-tests --enable-index-store`, or the custom build command). A Swift package is not built when nothing in the copy changed since it was built | shared | `Analyzer.swift`, `RunCache.swift` |
 | 5 | Static reference layer: read the build's index to fill the referenced column | layer | `References.swift` |
@@ -202,6 +202,23 @@ func tint(for state: LoadState) -> Tint {
 
 The case mutants are a second round of `runMutants`, after the mutants of the whole bodies: the outcomes of the first decide which methods' cases run. `CaseResult` holds a case's outcomes, and `Classifier.classify(_:cases:)` combines them with the method's.
 
+#### Closures
+
+With `--closure`, `MethodDiscovery` asks `ClosureFinder` for the trailing closures of the calls `ClosureUnits` names, in the body of every function and getter it records; see [Closures](docs/methods/extreme-mutation.md#closures) for which calls match. Each closure is a `DiscoveredMethod` of its own, decided like a method with the return type the user gave for the call, so the rest of the pipeline does not know the difference:
+
+```swift
+var handler: Handler<State, Event> {
+    Handler { state, event in switch __steActiveMutant { case 1: return .none; case -2: __steReached(1); default: break };
+        state.unread += 1
+        return .save
+    }
+}
+```
+
+- **The mutants stand after the closure's signature.** `bodyContentStart` is the end of `in`, or of the `{` when the closure has no signature. The expression a closure returns implicitly gets its `return` like that of a method.
+- **Executed is the closure's own.** The switch records the closure when it runs, and in custom mode llvm-cov has a function of its own for a closure, whose region starts at the closure's `{` (`MethodInfo.bodyStart`).
+- **The index knows the enclosing method.** It has no symbol for a closure, so the referenced column of a closure is `unknown`. `DiscoveredMethod.indexed` is the method the closure is written in: whether that method was compiled says whether the closure was, and its tests are the ones selected when the build recorded nothing.
+
 ## Tests
 
 - Unit tests cover discovery, mutation operators, the rewriter, classification and reporting.
@@ -211,6 +228,7 @@ The case mutants are a second round of `runMutants`, after the mutants of the wh
 - `Tests/Fixtures/OrderDependentProject` has a test scope that passes only after another test ran. The integration test checks that it is reported under *Tests that fail alone* and not selected.
 - `Tests/Fixtures/SharedStateProject` has state that outlives a test: a value that is computed once, and a test that passes only once in a process. The integration test checks that the resident host leaves the mutants this affects to processes of their own, and that the outcomes are those of a process for every run.
 - `Tests/Fixtures/SwitchProject` has methods whose logic is a switch, each `tested` by the mutants of its whole body or not analysed at all. The integration test checks which cases `--case-mutants` reports.
+- `Tests/Fixtures/ClosureProject` has logic that is written as closures, in methods that are not analysed themselves. The integration test checks what `--closure` reports for the closures and for the cases of their switches.
 - `Tests/Fixtures/EdgeCases` collects constructs that must still compile after rewriting: `if`/`switch` expressions, result builders, `some View` outside a result builder, `throws`, actors, `defaultIsolation(MainActor)`, and more. Add a case here when changing the rewriter.
 
 ## Adding a method
