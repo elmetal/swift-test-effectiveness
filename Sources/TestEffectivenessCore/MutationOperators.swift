@@ -1,3 +1,4 @@
+import SwiftParser
 import SwiftSyntax
 
 /// Decides which extreme mutants a method gets, based on its declared return type.
@@ -12,6 +13,8 @@ import SwiftSyntax
 /// - `[K: V]`, `Dictionary` → `[:]`
 /// - `some View` → `EmptyView()`, inside a result builder or not
 /// - `Never` and anything else → not analyzed (reported with a reason)
+///
+/// A type that `DefaultValues` names returns the values given for it instead.
 ///
 /// When the throw operator is enabled, untyped `throws` methods also get a `throw` mutant.
 public enum MutationOperators {
@@ -33,7 +36,10 @@ public enum MutationOperators {
     /// - Parameters:
     ///   - returnType: the declared return type, or `nil` when there is no return clause.
     ///   - isResultBuilder: whether the body is transformed by a result builder.
-    public static func mutations(for returnType: TypeSyntax?, isResultBuilder: Bool) -> Decision {
+    ///   - defaults: the values to return for the types the user named.
+    public static func mutations(
+        for returnType: TypeSyntax?, isResultBuilder: Bool, defaults: DefaultValues = DefaultValues()
+    ) -> Decision {
         guard let returnType else {
             return isResultBuilder ? .skip(reason: "result builder body without return type") : .mutate([.emptyBody])
         }
@@ -45,11 +51,19 @@ public enum MutationOperators {
                constraint == "View" || constraint == "SwiftUI.View" {
                 return .mutate([.emptyView])
             }
-            return .skip(reason: "\(unsupportedReturnType) `\(type.trimmedDescription)`")
+            // Every `return` of a `some` type has the same concrete type: a value of another type
+            // cannot be returned in front of the body.
+            guard opaque.someOrAnySpecifier.tokenKind == .keyword(.any), !isResultBuilder,
+                  let mutations = defaults.mutations(for: type)
+            else { return .skip(reason: "\(unsupportedReturnType) `\(type.trimmedDescription)`") }
+            return .mutate(mutations)
         }
 
         if isResultBuilder {
             return .skip(reason: "result builder body returning `\(type.trimmedDescription)`")
+        }
+        if let mutations = defaults.mutations(for: type) {
+            return .mutate(mutations)
         }
 
         if type.is(OptionalTypeSyntax.self) || type.is(ImplicitlyUnwrappedOptionalTypeSyntax.self) {
@@ -104,7 +118,7 @@ public enum MutationOperators {
     }
 
     /// `Swift.Array<Int>` → `Swift.Array`, `Int` → `Int`.
-    private static func baseName(of type: TypeSyntax) -> String {
+    static func baseName(of type: TypeSyntax) -> String {
         if let identifier = type.as(IdentifierTypeSyntax.self) {
             return identifier.name.text
         }
@@ -112,5 +126,83 @@ public enum MutationOperators {
             return baseName(of: member.baseType) + "." + member.name.text
         }
         return type.trimmedDescription
+    }
+}
+
+/// The values a method returns as its mutants, for the return types the user names
+/// (`--default-value 'Money=.zero'`).
+///
+/// The built-in rules know the simplest value of the standard library's types only. A type of the
+/// project or of a library often has one as well (`.zero`, `.empty`, `.none`); with it, a method
+/// that returns the type is mutated like any other, and so is each case of its switch.
+///
+/// A return type is looked up as it is written, since nothing here resolves types:
+/// 1. the whole type (`Result<Int, Error>`, `(Int, Int)`, `any Shape`),
+/// 2. its name without generic arguments (`Tagged` for `Tagged<User, Int>`),
+/// 3. the last component of that name (`State` for `Feature.State`).
+///
+/// A type alias is another name, and needs values of its own. The values of a type replace the
+/// built-in ones, and each value given for it is one mutant.
+public struct DefaultValues: Equatable, Sendable {
+    public struct ParseError: Error, Equatable, CustomStringConvertible {
+        public var description: String
+    }
+
+    /// The expressions for each type, in the order given. The keys have no whitespace.
+    private var values: [String: [String]] = [:]
+
+    public init() {}
+
+    /// - Parameter arguments: `TYPE=EXPRESSION`, split at the first `=`.
+    public init(parsing arguments: [String]) throws {
+        for argument in arguments {
+            guard let separator = argument.firstIndex(of: "=") else {
+                throw ParseError(description: "'\(argument)' is not TYPE=EXPRESSION")
+            }
+            let type = Self.withoutWhitespace(String(argument[..<separator]))
+            let expression = argument[argument.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+            guard !type.isEmpty else {
+                throw ParseError(description: "'\(argument)' names no type before `=`")
+            }
+            guard !["Void", "Swift.Void", "()", "Never", "Swift.Never"].contains(type) else {
+                throw ParseError(description: "`\(type)` has no value to return")
+            }
+            // The mutants stand on the line of the code they replace, so that line numbers stay.
+            guard Self.tokens(of: expression) != nil, !expression.contains(where: \.isNewline) else {
+                throw ParseError(description: "'\(expression)' is not one expression on one line, for `\(type)`")
+            }
+            if values[type]?.contains(expression) != true {
+                values[type, default: []].append(expression)
+            }
+        }
+    }
+
+    public var isEmpty: Bool { values.isEmpty }
+
+    func mutations(for type: TypeSyntax) -> [ExtremeMutation]? {
+        var keys = [Self.withoutWhitespace(type.trimmedDescription)]
+        if type.is(IdentifierTypeSyntax.self) || type.is(MemberTypeSyntax.self) {
+            let name = MutationOperators.baseName(of: type)
+            keys.append(name)
+            if let last = name.split(separator: ".").last { keys.append(String(last)) }
+        }
+        for key in keys {
+            if let expressions = values[key] { return expressions.map { .returnValue($0) } }
+        }
+        return nil
+    }
+
+    /// The tokens of `source` when it is one expression, to compare it with another as code:
+    /// whitespace and comments make no difference.
+    static func tokens(of source: String) -> [String]? {
+        let file = Parser.parse(source: source)
+        guard !file.hasError, file.statements.count == 1, let item = file.statements.first,
+              case .expr(let expression) = item.item, item.semicolon == nil
+        else { return nil }
+        return expression.tokens(viewMode: .sourceAccurate).map(\.text)
+    }
+
+    private static func withoutWhitespace(_ text: String) -> String {
+        String(text.filter { !$0.isWhitespace })
     }
 }

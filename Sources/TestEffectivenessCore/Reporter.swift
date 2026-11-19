@@ -64,6 +64,8 @@ public enum Reporter {
             "`\(method)` can always return `\"\(literal)\"` without any test failing. Assert the exact string."
         case .returnEmptyArray, .returnEmptyDictionary, .returnEmptyData:
             "`\(method)` can always return an empty collection without any test failing. Assert the elements."
+        case .returnValue(let expression):
+            "`\(method)` can always return `\(expression)` without any test failing. Assert the value it returns."
         case .emptyView:
             "`\(method)` can render nothing without any test failing. Add a UI, snapshot or view-inspection test."
         case .throwError:

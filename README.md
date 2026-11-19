@@ -108,6 +108,7 @@ Options for a specific method:
 | `--coverage-binary <path>` | coverage | Custom mode: a binary built with coverage, or a directory to search for binaries (repeatable) |
 | `--throw-mutants` | extreme mutation | Add a `throw` mutant for methods declared with untyped `throws` |
 | `--case-mutants` | extreme mutation | Also mutate each case of the switch a method ends with, to find the cases no test verifies; this also analyses such methods when they return an enum or another type without a default value (see [Cases of a switch](docs/methods/extreme-mutation.md#cases-of-a-switch)) |
+| `--default-value <type>=<expression>` | extreme mutation | Return this expression as the mutant of methods with this return type, e.g. `'Money=.zero'`, for the types the built-in rules have no value for (repeatable; see [Values for other return types](docs/methods/extreme-mutation.md#values-for-other-return-types)) |
 | `--no-arid` | extreme mutation | Also mutate methods returning `Void` whose body only logs (skipped by default, see [Not targeted](docs/methods/extreme-mutation.md#not-targeted)) |
 | `--arid-call <name>` | extreme mutation | Also treat calls to this function as logging, e.g. `track` or `Analytics.shared.track` (repeatable) |
 | `--jobs <n>` | extreme mutation | Run this many test runs at once (see [Parallel runs](#parallel-runs)) |

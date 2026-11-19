@@ -13,7 +13,8 @@ struct IntegrationTests {
     static let swift = ProcessInfo.processInfo.environment["STE_SWIFT"] ?? "swift"
 
     private func analyze(
-        _ fixture: String, throwMutants: Bool = false, caseMutants: Bool = false, testSelection: Bool = true,
+        _ fixture: String, throwMutants: Bool = false, caseMutants: Bool = false, defaultValues: [String] = [],
+        testSelection: Bool = true,
         jobs: Int = 1, directLaunch: Bool = true, rerunSurvivors: Bool = false, residentHost: Bool = true,
         minimumTimeout: Double? = 120, workDirectory: URL? = nil,
         log: @escaping @Sendable (String) -> Void = { _ in }
@@ -24,7 +25,10 @@ struct IntegrationTests {
             workDirectory: workDirectory
                 ?? FileManager.default.temporaryDirectory.appendingPathComponent("ste-it-\(fixture)"),
             buildSystem: .swiftPM(swiftExecutable: Self.swift, targets: [], testFilter: nil),
-            discovery: DiscoveryOptions(includeThrowMutants: throwMutants, caseMutants: caseMutants),
+            discovery: DiscoveryOptions(
+                includeThrowMutants: throwMutants, caseMutants: caseMutants,
+                defaultValues: try DefaultValues(parsing: defaultValues)
+            ),
             minimumTimeout: minimumTimeout,
             testSelection: testSelection,
             jobs: jobs,
@@ -390,6 +394,39 @@ struct IntegrationTests {
         #expect(methods["LoadState.severity(threshold:)"]?.classification == .tested)
         #expect(cases("LoadState.severity(threshold:)") == [
             "case .loaded(let count) where count > threshold: true killed", "case .failed(let message): true killed",
+        ])
+    }
+
+    /// `Tests/Fixtures/SwitchProject`: with a value for their return types, the methods that had no
+    /// mutant of their own are mutated like the others, and so are their cases.
+    @Test func defaultValuesGiveMethodsAndTheirCasesMutantsThatReturnThem() throws {
+        let defaultValues = ["Tint=.gray", "Severity=Severity(level: 0)"]
+        let whole = try analyze("SwitchProject", defaultValues: defaultValues)
+        #expect(whole.skipped.isEmpty)
+        #expect(whole.methods.allSatisfy { $0.classification == .tested && $0.cases == nil })
+
+        let report = try analyze("SwitchProject", caseMutants: true, defaultValues: defaultValues)
+        let methods = Dictionary(uniqueKeysWithValues: report.methods.map { ($0.method.name, $0) })
+        func cases(_ name: String) -> [String] {
+            (methods[name]?.cases ?? []).map { result in
+                let outcomes = result.mutants.map { "\($0.mutant.mutation.summary) \($0.outcome.rawValue)" }
+                return "\(result.label): \(result.executed.rawValue) \(outcomes.joined(separator: ","))"
+            }
+        }
+        // A test asserts the tint of `.failed`, so the mutant of the whole body is detected.
+        // `case .idle` returns the value already, and has no mutant.
+        #expect(methods["LoadState.tint"]?.mutants.map(\.outcome) == [.killed])
+        #expect(methods["LoadState.tint"]?.classification == .partiallyTested)
+        #expect(cases("LoadState.tint") == [
+            "case .loading: true `return .gray` survived", "case .loaded: false `return .gray` notRun",
+            "case .failed: true `return .gray` killed",
+        ])
+        // `case .idle` and `default` return the value already.
+        #expect(methods["LoadState.severity(threshold:)"]?.mutants.map(\.outcome) == [.killed])
+        #expect(methods["LoadState.severity(threshold:)"]?.classification == .tested)
+        #expect(cases("LoadState.severity(threshold:)") == [
+            "case .loaded(let count) where count > threshold: true `return Severity(level: 0)` killed",
+            "case .failed(let message): true `return Severity(level: 0)` killed",
         ])
     }
 

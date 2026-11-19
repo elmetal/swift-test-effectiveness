@@ -53,6 +53,9 @@ struct SwiftTestEffectiveness: ParsableCommand {
     @Flag(help: "Also mutate each case of a switch that a method ends with, to find the cases no test verifies.")
     var caseMutants = false
 
+    @Option(name: .customLong("default-value"), help: ArgumentHelp("Return this expression as the mutant of methods whose return type is written as this type, e.g. 'Money=.zero' (repeatable; several values for a type are a mutant each). The type is the whole type, its name without generic arguments, or the last component of that name.", valueName: "type=expression"))
+    var defaultValues: [String] = []
+
     @Flag(inversion: .prefixedNo, help: "Skip methods returning Void whose body only logs (print, os_log, logger.info(…), …).")
     var arid = true
 
@@ -118,6 +121,11 @@ struct SwiftTestEffectiveness: ParsableCommand {
             throw ValidationError("unknown format '\(format)'")
         }
         guard jobs >= 1 else { throw ValidationError("--jobs must be at least 1") }
+        do {
+            _ = try DefaultValues(parsing: defaultValues)
+        } catch {
+            throw ValidationError("--default-value: \(error)")
+        }
         let customOptions = [buildCommand, testCommand].compactMap { $0 }
         if !customOptions.isEmpty || !sourceDirectories.isEmpty {
             guard buildCommand != nil, testCommand != nil, !sourceDirectories.isEmpty else {
@@ -147,7 +155,8 @@ struct SwiftTestEffectiveness: ParsableCommand {
             discovery: DiscoveryOptions(
                 includeThrowMutants: throwMutants,
                 arid: arid ? AridDetector(additionalCalls: aridCalls) : nil,
-                caseMutants: caseMutants
+                caseMutants: caseMutants,
+                defaultValues: try DefaultValues(parsing: defaultValues)
             ),
             changedSince: since,
             excludePathSubstrings: excludes,

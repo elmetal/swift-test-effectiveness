@@ -175,7 +175,7 @@ func badge() -> some View { func __steOriginal() -> some View {
 
 #### case のミュータント
 
-`--case-mutants` を指定すると、`MethodDiscovery` が `SwitchCases.discover` を呼び、本体の末尾にある switch の case を求めます（`DiscoveredMethod.cases`）。対象になる switch と case は [switch の case](docs/ja/methods/extreme-mutation.md#switch-の-case) を参照してください。戻り値型に最も単純な値がないメソッドは、`.mutate([])` として残します。メソッド自身のミュータントはなく、case のミュータントだけを持ちます。
+`--case-mutants` を指定すると、`MethodDiscovery` が `SwitchCases.discover` を呼び、本体の末尾にある switch の case を求めます（`DiscoveredMethod.cases`）。対象になる switch と case は [switch の case](docs/ja/methods/extreme-mutation.md#switch-の-case) を参照してください。戻り値型に最も単純な値がないメソッド（組み込みの規則にも、`--default-value` の指定（`DefaultValues`）にもない場合）は、`.mutate([])` として残します。メソッド自身のミュータントはなく、case のミュータントだけを持ちます。
 
 `Analyzer.run()` は、メソッドの case のミュータントに、メソッド自身のミュータントの次の ID を割り当てます。`SchemataRewriter` はそれを各 case の先頭（ラベルのコロンの直後）に入れます。
 

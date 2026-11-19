@@ -50,6 +50,22 @@ As in PIT/Descartes, a mutant that times out counts as detected.
 | untyped `throws` (only with `--throw-mutants`) | `throw`, in addition to the above |
 | `async` | unchanged (the rules above apply as-is) |
 
+### Values for other return types
+
+The rules above cover the standard library. A type of the project or of a library often has a simplest value as well (`.zero`, `.empty`, `.none`), but only the project knows it. `--default-value` names it:
+
+```sh
+swift-test-effectiveness --default-value 'Money=.zero' --default-value 'Tint=.gray'
+```
+
+A method that returns `Money` then gets the mutant `return .zero`. With `--case-mutants`, so does each case of its switch, instead of doing what another case does.
+
+- The expression is written into every method that returns the type, so it has to compile in all of them: a leading dot (`.zero`) or an initializer (`Money(cents: 0)`) rather than a local name.
+- Return types are compared as they are written, because the tool does not resolve types. `Money=…` matches `Money`, `Shop.Money` and `Money<Yen>`. `Shop.Money=…` and `Money<Yen>=…` are more specific, and win over `Money=…`. The whole type can be named as well (`'Result<Int, Error>=.success(0)'`, `'(Int, Int)=(0, 0)'`). A type alias is another name and needs a value of its own. `Money?` and `[Money]` keep the rules of the table.
+- Several values for one type are a mutant each, like `true` and `false`.
+- A value for a type of the table replaces its mutants.
+- `some` types and result builders take no value: every `return` of a `some` type has the same concrete type.
+
 ## Cases of a switch
 
 Off by default; `--case-mutants` turns it on.
@@ -87,14 +103,14 @@ Each case gets the mutants of the method's return type (see [Mutants per return 
 
 | Case | Mutants |
 |---|---|
-| returns the literal a mutant returns (`case .none: return nil`, `case .a: true`) | that mutant is left out (`true` still gets `return false`) |
+| returns the literal a mutant returns (`case .none: return nil`, `case .a: true`), or the expression given with `--default-value` (compared as code: spacing and comments make no difference) | that mutant is left out (`true` still gets `return false`) |
 | in a `Void` method, does nothing (`break`, a bare `return`) or only logs ([arid](#arid-bodies)) | none |
 | only calls `fatalError()` or `preconditionFailure()` | none |
 | throws, with `--throw-mutants` | no `throw` mutant |
 
 ### Return types without a simplest value
 
-A method returning an enum, a type of the project or any other type without a general default value has no mutant of its own (see [Not targeted](#not-targeted)). With `--case-mutants`, such a method is analysed through its cases alone, and each case does what another case does instead:
+A method returning an enum, a type of the project or any other type without a general default value has no mutant of its own (see [Not targeted](#not-targeted)), unless `--default-value` [gives its type a value](#values-for-other-return-types). With `--case-mutants`, such a method is analysed through its cases alone, and each case does what another case does instead:
 
 ```swift
 var tint: Tint {
@@ -157,7 +173,7 @@ In the JSON report a method whose cases ran has `cases`: for each case with muta
 | `some View` returned from a `rethrows` function | the local function that keeps the original body cannot be `rethrows` ([details](../../ARCHITECTURE.md#mutant-schemata)) |
 | an expression next to `#if` blocks that may all be compiled out | whether it is returned implicitly depends on the build configuration ([details](../../ARCHITECTURE.md#mutant-schemata)) |
 | result builders other than `View` | unknown which constructs the builder supports |
-| tuples, `Result`, generic type parameters, user-defined types, opaque types other than `some View`, … | no general default value. With `--case-mutants`, a method that ends with a switch is analysed [case by case](#return-types-without-a-simplest-value) |
+| tuples, `Result`, generic type parameters, user-defined types, opaque types other than `some View`, … | no general default value. `--default-value` [gives a type one](#values-for-other-return-types), except an opaque type. With `--case-mutants`, a method that ends with a switch is analysed [case by case](#return-types-without-a-simplest-value) |
 
 Methods that are not targeted are not silently dropped: the report lists them under *Not analyzed* with the reason.
 
@@ -180,7 +196,7 @@ The check is syntactic, so the receiver's type is not known: `logger.info(…)` 
 ## Limits
 
 - Extreme mutation checks whether a method is verified *at all*, not whether it is verified *well*. `tested` is not a quality guarantee; it means there is no obvious hole. Use traditional mutation testing for finer-grained checks.
-- Methods with unsupported return types cannot be analysed (see [Not targeted](#not-targeted)), except case by case when they end with a switch (see [Cases of a switch](#cases-of-a-switch)).
+- Methods with unsupported return types cannot be analysed (see [Not targeted](#not-targeted)), except with a value from `--default-value`, or case by case when they end with a switch (see [Cases of a switch](#cases-of-a-switch)).
 - One test of one case of a switch detects every mutant of the whole body. Without `--case-mutants`, such a method is `tested` however few of its cases the tests check.
 
 ## Implementation

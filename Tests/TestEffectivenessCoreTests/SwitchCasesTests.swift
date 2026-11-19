@@ -2,22 +2,27 @@ import Testing
 @testable import TestEffectivenessCore
 
 struct SwitchCasesTests {
-    private func discover(_ source: String, caseMutants: Bool = true, throwMutants: Bool = false) -> [DiscoveredMethod] {
+    private func discover(
+        _ source: String, caseMutants: Bool = true, throwMutants: Bool = false, defaultValues: [String] = []
+    ) -> [DiscoveredMethod] {
         MethodDiscovery.discover(
             source: source, relativePath: "Sources/A/File.swift",
-            options: DiscoveryOptions(includeThrowMutants: throwMutants, caseMutants: caseMutants)
+            options: DiscoveryOptions(
+                includeThrowMutants: throwMutants, caseMutants: caseMutants,
+                defaultValues: try! DefaultValues(parsing: defaultValues)
+            )
         )
     }
 
     /// `label: mutations` of each case of the first method.
-    private func cases(_ source: String, throwMutants: Bool = false) -> [String] {
-        discover(source, throwMutants: throwMutants)[0].cases.map {
+    private func cases(_ source: String, throwMutants: Bool = false, defaultValues: [String] = []) -> [String] {
+        discover(source, throwMutants: throwMutants, defaultValues: defaultValues)[0].cases.map {
             "\($0.label): \($0.mutations.map(\.summary).joined(separator: ", "))"
         }
     }
 
     /// The schema with ids assigned as `Analyzer` does: a method's mutants, then its cases'.
-    private func rewrite(_ source: String) -> String {
+    private func rewrite(_ source: String, defaultValues: [String] = []) -> String {
         var nextID = 1
         func mutants(_ mutations: [ExtremeMutation]) -> [Mutant] {
             mutations.map { mutation in
@@ -26,7 +31,7 @@ struct SwitchCasesTests {
             }
         }
         var cases: [[[Mutant]]] = []
-        let assignments = discover(source).map { method in
+        let assignments = discover(source, defaultValues: defaultValues).map { method in
             let own = mutants(method.mutations)
             cases.append(method.cases.map { mutants($0.mutations) })
             return (method, own)
@@ -282,6 +287,64 @@ struct SwitchCasesTests {
         """)[0]
         #expect(method.cases.isEmpty)
         #expect(method.decision == .skip(reason: "unsupported return type `some ToolbarContent`"))
+    }
+
+    // MARK: Values from the user
+
+    /// With a value for its return type, the method has a mutant of its own, and each case
+    /// returns the value instead of doing what another case does.
+    @Test func aTypeWithAValueFromTheUserReturnsItInEachCase() {
+        let source = """
+        var tint: Tint {
+            switch self {
+            case .a: .x
+            case .b(let n): .y(n)
+            case .c: .gray
+            case .d: fatalError()
+            }
+        }
+        """
+        let method = discover(source, defaultValues: ["Tint=.gray", "Tint=.x"])[0]
+        #expect(method.decision == .mutate([.returnValue(".gray"), .returnValue(".x")]))
+        // A mutant that returns what the case returns is left out.
+        #expect(cases(source, defaultValues: ["Tint=.gray", "Tint=.x"]) == [
+            "case .a: `return .gray`",
+            "case .b(let n): `return .gray`, `return .x`",
+            "case .c: `return .x`",
+            "case .d: ",
+        ])
+        #expect(rewrite(source, defaultValues: ["Tint=.gray"]) == """
+        var tint: Tint { switch __steActiveMutant { case 1: return .gray; case -2: __steReached(1); default: break };
+            return switch self {
+            case .a: if __steMutantIs(2) { .gray } else { .x }
+            case .b(let n): if __steMutantIs(3) { .gray } else { .y(n) }
+            case .c: .gray
+            case .d: fatalError()
+            }
+        }
+
+        """)
+    }
+
+    /// The value and what a case returns are compared as code, not as text.
+    @Test func aValueFromTheUserIsWhatACaseReturnsWhateverItsSpacing() {
+        #expect(cases("""
+        func severity(_ x: E) -> Severity {
+            switch x {
+            case .a:
+                return Severity(level:0) // none
+            case .b:
+                return Severity(level: 1)
+            case .c:
+                let level = 0
+                return Severity(level: level)
+            }
+        }
+        """, defaultValues: ["Severity=Severity( level: 0 )"]) == [
+            "case .a: ",
+            "case .b: `return Severity( level: 0 )`",
+            "case .c: `return Severity( level: 0 )`",
+        ])
     }
 
     @Test func statementsThatCannotMoveAreNotTaken() {
