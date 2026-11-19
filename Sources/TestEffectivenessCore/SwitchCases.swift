@@ -172,6 +172,14 @@ enum SwitchCases {
         return nil
     }
 
+    /// What a body returns, when that is all it does: the expression of its one `return`, or the
+    /// one expression whose value is returned implicitly.
+    static func returnedValue(of statements: CodeBlockItemListSyntax) -> ExprSyntax? {
+        guard statements.count == 1, let only = statements.first else { return nil }
+        if case .stmt(let stmt) = only.item, let returned = stmt.as(ReturnStmtSyntax.self) { return returned.expression }
+        return expression(of: only)
+    }
+
     private static func expression(of item: CodeBlockItemSyntax) -> ExprSyntax? {
         switch item.item {
         case .expr(let expr): expr

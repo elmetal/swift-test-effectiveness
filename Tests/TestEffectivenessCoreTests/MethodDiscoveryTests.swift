@@ -2,9 +2,14 @@ import Testing
 @testable import TestEffectivenessCore
 
 struct MethodDiscoveryTests {
-    private func discover(_ source: String, path: String = "Sources/A/File.swift", throwMutants: Bool = false) -> [DiscoveredMethod] {
+    private func discover(
+        _ source: String, path: String = "Sources/A/File.swift", throwMutants: Bool = false, defaultValues: [String] = []
+    ) -> [DiscoveredMethod] {
         MethodDiscovery.discover(
-            source: source, relativePath: path, options: DiscoveryOptions(includeThrowMutants: throwMutants)
+            source: source, relativePath: path,
+            options: DiscoveryOptions(
+                includeThrowMutants: throwMutants, defaultValues: try! DefaultValues(parsing: defaultValues)
+            )
         )
     }
 
@@ -59,7 +64,7 @@ struct MethodDiscoveryTests {
         let methods = discover("""
         struct S {
             var x: Int {
-                get { 1 }
+                get { stored }
                 set {}
             }
         }
@@ -298,5 +303,92 @@ struct MethodDiscoveryTests {
         let reason = "`#if` in the body decides whether its value is returned implicitly"
         #expect(methods.map { $0.decision == .skip(reason: reason) } == [true, true, true, false, false, false])
         #expect(methods.allSatisfy { $0.implicitReturnInsertions.isEmpty })
+    }
+
+    // MARK: - A body that only returns a value
+
+    private func onlyReturns(_ mutant: String) -> MutationOperators.Decision {
+        .skip(reason: "body only returns the value of its mutant (`return \(mutant)`)")
+    }
+
+    /// The mutant would be the body as it is: no test could detect it.
+    @Test func aMutantThatReturnsWhatTheBodyReturnsIsLeftOut() {
+        let methods = discover("""
+        func a() -> Bool { true }
+        func b() -> Bool { return false }
+        var c: Int { 1 }
+        func d() -> Double { 0.0 }
+        func e() -> String { "" }
+        func f() -> String { "A" }
+        """)
+        #expect(methods.map(\.decision) == [
+            .mutate([.returnBool(false)]), .mutate([.returnBool(true)]),
+            .mutate([.returnNumber("0")]), .mutate([.returnNumber("1")]),
+            .mutate([.returnString("A")]), .mutate([.returnString("")]),
+        ])
+        // The value is still returned implicitly behind the mutants that are left.
+        #expect(methods.map(\.implicitReturnInsertions.count) == [1, 0, 1, 1, 1, 1])
+    }
+
+    @Test func aBodyThatOnlyReturnsTheValueOfItsOnlyMutantIsNotAnalyzed() {
+        let methods = discover("""
+        func a() -> Int? { nil }
+        func b() -> Int? {
+            return nil
+        }
+        var c: [Int] { [] }
+        var d: [String: Int] { [:] }
+        func e() -> Data { Data() }
+        """)
+        #expect(methods.map(\.decision) == [
+            onlyReturns("nil"), onlyReturns("nil"), onlyReturns("[]"), onlyReturns("[:]"), onlyReturns("Data()"),
+        ])
+    }
+
+    @Test func aBodyThatDoesMoreKeepsItsMutants() {
+        let methods = discover("""
+        func a() -> Int? { log(); return nil }
+        func b() -> Int? { flag ? nil : 1 }
+        func c() -> Int? {
+            guard flag else { return nil }
+            return nil
+        }
+        func d() -> Int? { .none }
+        func e() -> [Int] { [1] }
+        func f() -> Int? { fatalError() }
+        func g() {}
+        var body: some View { EmptyView() }
+        """)
+        #expect(methods.map(\.decision) == [
+            .mutate([.returnNil]), .mutate([.returnNil]), .mutate([.returnNil]), .mutate([.returnNil]),
+            .mutate([.returnEmptyArray]), .mutate([.returnNil]), .mutate([.emptyBody]), .mutate([.emptyView]),
+        ])
+    }
+
+    /// A value from the user is compared as code, as in a case.
+    @Test func aValueFromTheUserIsWhatABodyReturnsWhateverItsSpacing() {
+        let methods = discover("""
+        func a() -> Command { .none }
+        func b() -> Command {
+            return Command . none // nothing to do
+        }
+        func c() -> Command { .save }
+        func d() -> Tint { .gray }
+        func e() -> Tint { Tint.gray }
+        """, defaultValues: ["Command=.none", "Command=Command.none", "Tint=.gray", "Tint=.clear"])
+        #expect(methods.map(\.decision) == [
+            .mutate([.returnValue("Command.none")]), .mutate([.returnValue(".none")]),
+            .mutate([.returnValue(".none"), .returnValue("Command.none")]),
+            .mutate([.returnValue(".clear")]), .mutate([.returnValue(".gray"), .returnValue(".clear")]),
+        ])
+        let only = discover("func a() -> Command { .none }", defaultValues: ["Command=.none"])
+        #expect(only.map(\.decision) == [onlyReturns(".none")])
+    }
+
+    /// Throwing instead is something a test can detect.
+    @Test func theThrowMutantOfABodyThatOnlyReturnsAValueStays() {
+        let methods = discover("func a() throws -> Int? { nil }", throwMutants: true)
+        #expect(methods.map(\.decision) == [.mutate([.throwError])])
+        #expect(methods.map(\.implicitReturnInsertions.count) == [1])
     }
 }

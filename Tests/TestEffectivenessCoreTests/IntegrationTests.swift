@@ -438,7 +438,7 @@ struct IntegrationTests {
         #expect(unnamed.methods.allSatisfy { $0.classification == .tested })
         #expect(unnamed.skipped.map(\.method.name) == [
             "Inbox.handler", "Archive.handler()", "Archive.refreshing", "Rules.positive", "Rules.all(_:)",
-            "Archive.count(of:)",
+            "Archive.count(of:)", "Archive.idle",
         ])
 
         let report = try analyze(
@@ -446,7 +446,11 @@ struct IntegrationTests {
             closures: ["Handler=Command", ".init=Command", "subscribe=Void", "Rule=Bool", "allSatisfy=Bool", "Job=Int"]
         )
         // The methods are still not analyzed themselves.
-        #expect(report.skipped.map(\.method.name) == unnamed.skipped.map(\.method.name))
+        #expect(report.skipped.filter { $0.method.kind != .closure }.map(\.method.name) == unnamed.skipped.map(\.method.name))
+        // A closure that only returns the value has no mutant a test could detect.
+        #expect(report.skipped.filter { $0.method.kind == .closure }.map { "\($0.method.name) (\($0.method.declarationStart.line)): \($0.reason)" } == [
+            "Archive.idle, Handler { } (154): body only returns the value of its mutant (`return .none`)",
+        ])
         let closures = report.methods.filter { $0.method.kind == .closure }
         let summary = closures.map { result in
             "\(result.method.name) (\(result.method.declarationStart.line)): \(result.classification.rawValue) "
