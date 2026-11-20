@@ -128,9 +128,33 @@ struct ClosureUnitsTests {
         }
         """, closures: ["subscribe=Void"])
         #expect(methods.map { "\($0.info.name) \($0.info.declarationStart.line)" } == [
-            "start(_:) 1", "start(_:), subscribe { } 2", "start(_:), subscribe { } 3", "start(_:), subscribe { } 6",
+            "start(_:) 1", "start(_:), subscribe { } #1 2", "start(_:), subscribe { } #2 3", "start(_:), subscribe { } #3 6",
         ])
         #expect(methods.dropFirst().allSatisfy { $0.enclosing == methods[0].info })
+    }
+
+    /// Nothing but their lines would tell the closures of one name in a body apart.
+    @Test func closuresOfOneNameInABodyAreNumbered() {
+        func names(_ source: String) -> [String] {
+            discover(source, closures: ["Handler=Command", "subscribe=Void"]).filter { $0.info.kind == .closure }
+                .map { "\($0.info.name) \($0.info.declarationStart.line):\($0.info.declarationStart.column)" }
+        }
+        #expect(names("""
+        func f(feed: Feed) {
+            a(Handler { _, _ in .save })
+            feed.subscribe { _ in log() }
+            b(Handler { _, _ in .reload })
+        }
+        func g() { c(Handler { _, _ in .save }) }
+        """) == [
+            "f(feed:), Handler { } #1 2:15", "f(feed:), subscribe { } 3:20", "f(feed:), Handler { } #2 4:15",
+            // The only one of its body.
+            "g(), Handler { } 6:22",
+        ])
+        // In the order they are written, which is not the order the calls are found in.
+        #expect(names("func f(feed: Feed) { feed.subscribe { a() }.subscribe { b() } }") == [
+            "f(feed:), subscribe { } #2 1:55", "f(feed:), subscribe { } #1 1:37",
+        ])
     }
 
     @Test func withoutANameNoClosureIsAMethod() {

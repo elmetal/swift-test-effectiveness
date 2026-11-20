@@ -529,9 +529,9 @@ struct IntegrationTests {
             "Archive.handler(), Handler { } (68): partially-tested `return .none` killed",
             // One expression, returned implicitly.
             "Archive.refreshing, init { } (79): tested `return .none` killed",
-            "Recorder.record(_:), subscribe { } (105): tested empty body killed",
+            "Recorder.record(_:), subscribe { } #1 (105): tested empty body killed",
             // No test reads what it counts.
-            "Recorder.record(_:), subscribe { } (108): pseudo-tested empty body survived",
+            "Recorder.record(_:), subscribe { } #2 (108): pseudo-tested empty body survived",
             // Without a signature.
             "Rules.positive, Rule { } (122): tested `return true` killed,`return false` killed",
             // A closure and the closure in it.
