@@ -378,9 +378,10 @@ public enum MethodDiscovery {
             // The closures of the body that are methods of their own. Those of a closure are
             // found with it.
             guard closure == nil, leftBrace.presence == .present, rightBrace.presence == .present else { return }
-            for found in ClosureFinder.closures(in: statements, units: options.closures) {
+            let closures = ClosureFinder.closures(in: statements, units: options.closures)
+            for (found, label) in zip(closures, Self.labels(of: closures)) {
                 record(
-                    decl: Syntax(found.closure), name: "\(name), \(found.name) { }", kind: .closure,
+                    decl: Syntax(found.closure), name: "\(name), \(label)", kind: .closure,
                     // What keeps the body from the mutant switch keeps its closures from it.
                     attributes: attributes,
                     returnType: found.returnType, isResultBuilder: false, canThrow: false, effects: Effects(),
@@ -392,6 +393,19 @@ public enum MethodDiscovery {
                     )
                 )
             }
+        }
+
+        /// How each closure of a body is named after its method: `Handler { }`. Where the body has
+        /// several closures of one name, they are numbered in the order they are written
+        /// (`Handler { } #1`, `Handler { } #2`): nothing else about them is sure to differ.
+        static func labels(of closures: [FoundClosure]) -> [String] {
+            var labels = closures.map { "\($0.name) { }" }
+            for indices in Dictionary(grouping: closures.indices, by: { closures[$0].name }).values where indices.count > 1 {
+                // A call is found before the calls in what it is called on (`a { }.b { }`).
+                let written = indices.sorted { closures[$0].closure.position < closures[$1].closure.position }
+                for (number, index) in written.enumerated() { labels[index] += " #\(number + 1)" }
+            }
+            return labels
         }
 
         static func onlyReturnsTheValueOfItsMutant(_ mutation: ExtremeMutation) -> String {
