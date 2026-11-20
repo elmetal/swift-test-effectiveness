@@ -959,6 +959,32 @@ public final class Analyzer: @unchecked Sendable {
         /// that survives the scopes that execute its method then survives the whole suite: a test
         /// that never calls the method runs the same code with and without the mutant.
         var coversSuite = false
+
+        /// Why the scopes that pass alone are not the whole suite, or `nil` when they are.
+        ///
+        /// The scopes come from the index and the test sources; a test they miss could detect a
+        /// mutant that survives them. Only when they ran as many tests as the baseline is nothing
+        /// left for the whole suite to add.
+        ///
+        /// A scope that cannot be selected decides nothing by itself. The baseline may not run it
+        /// either (a target the scheme builds but its test plan leaves out), and then the counts
+        /// still match; when the baseline does run it (a target named differently from its
+        /// module), its tests are missing from the count of the scopes.
+        ///
+        /// - Parameters:
+        ///   - executedAlone: the number of tests the scopes that pass alone executed together.
+        ///   - baselineTests: the number of tests the baseline executed, `0` if unknown.
+        static func whyNotTheWholeSuite(
+            scopesFailAlone: Bool, scopesCannotBeSelected: Bool, executedAlone: Int, baselineTests: Int
+        ) -> String? {
+            if scopesFailAlone { return "some test scopes fail alone" }
+            if baselineTests == 0 { return "the number of tests the baseline executed is unknown" }
+            if executedAlone != baselineTests {
+                return "the scopes executed \(executedAlone) tests alone, the baseline \(baselineTests)"
+                    + (scopesCannotBeSelected ? "; some test scopes cannot be selected" : "")
+            }
+            return nil
+        }
     }
 
     /// The tests that may be selected, or `nil` to run the whole suite for every mutant.
@@ -966,7 +992,8 @@ public final class Analyzer: @unchecked Sendable {
     /// Selecting every test must pass on the unmodified code. Otherwise a selector names a target
     /// the scheme cannot run (`xcodebuild` then fails), or a test depends on tests outside the
     /// selection; either would make a mutant look detected. A module whose selection fails on its
-    /// own is never selected.
+    /// own is never selected. Whether the baseline runs its tests shows in the number of tests
+    /// (see `RecordedReach.whyNotTheWholeSuite`).
     ///
     /// Each remaining scope then runs alone (see `scopesFailingAlone`); a scope that fails is not
     /// selected either and is returned for the report. The same runs record the methods each
@@ -993,16 +1020,10 @@ public final class Analyzer: @unchecked Sendable {
             for (scope, methods) in isolation.reached where remaining.contains(scope) {
                 for method in methods { reach.scopes[method, default: []].insert(scope) }
             }
-            // The scopes come from the index and the test sources; a test they miss could detect
-            // a mutant that survives them. Only when they ran as many tests as the baseline is
-            // nothing left for the whole suite to add.
-            let why: String? =
-                !isolation.failures.isEmpty ? "some test scopes fail alone"
-                : remaining.count != all.count ? "some test scopes cannot be selected"
-                : baselineTests == 0 ? "the number of tests the baseline executed is unknown"
-                : isolation.executedTests != baselineTests
-                    ? "the scopes executed \(isolation.executedTests) tests alone, the baseline \(baselineTests)"
-                : nil
+            let why = RecordedReach.whyNotTheWholeSuite(
+                scopesFailAlone: !isolation.failures.isEmpty, scopesCannotBeSelected: selectable.count != all.count,
+                executedAlone: isolation.executedTests, baselineTests: baselineTests
+            )
             reach.coversSuite = why == nil
             if let why {
                 log("Recorded the methods each test scope executes. A mutant that survives the scopes "
