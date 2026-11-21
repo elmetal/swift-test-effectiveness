@@ -21,7 +21,7 @@ swift-test-effectiveness がどう作られているかを説明します。ツ�
 | # | ステージ | 種類 | ファイル |
 |---|---|---|---|
 | 1 | ソースファイルを列挙する。`swift package describe` のテスト以外のターゲット、またはカスタムモードでは `--source-dir`。`--exclude` を適用する | 共通 | `Analyzer.swift` |
-| 2 | SwiftSyntax で宣言を発見し、各層がそれをどう解析するか（または対象外の理由）を決める。本体がログ出力だけの宣言もここで対象外にする（`AridDetection.swift`）。`--since` 指定時は、変更行と重なる宣言だけを残す | 共通 | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `ClosureUnits.swift`, `ResultMutants.swift`, `AridDetection.swift`, `GitDiff.swift` |
+| 2 | SwiftSyntax で宣言を発見し、各層がそれをどう解析するか（または対象外の理由）を決める。本体がログ出力だけの宣言もここで対象外にする（`AridDetection.swift`）。`--since` 指定時は、変更行と重なる宣言だけを残し、変更が触れたテストファイルを記録する（`ChangedTests`: 解析対象のソース以外で、テストフレームワークを import しているファイル。削除されたファイルは diff から読む）。ミューテーションした宣言が 1 つもないとき、`Reporter` がそれを一覧にする | 共通 | `MethodDiscovery.swift`, `MutationOperators.swift`, `SwitchCases.swift`, `ClosureUnits.swift`, `ResultMutants.swift`, `AridDetection.swift`, `GitDiff.swift` |
 | 3 | プロジェクトを `<package>/.build/test-effectiveness/project` にコピーし、必要な層のためにコピーを準備する | 共通 | `Analyzer.swift`, `SchemataRewriter.swift` |
 | 4 | **1 回だけ** ビルドする（`swift build --build-tests --enable-index-store`、またはカスタムのビルドコマンド）。Swift パッケージでは、前回のビルドからコピーが変わっていなければビルドしない | 共通 | `Analyzer.swift`, `RunCache.swift` |
 | 5 | 静的参照層：ビルドが書き出したインデックスを読み、referenced 列を埋める | 層 | `References.swift` |

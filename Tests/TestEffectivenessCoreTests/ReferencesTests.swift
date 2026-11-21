@@ -4,6 +4,17 @@ import Testing
 @testable import TestEffectivenessCore
 
 struct TestScopeFinderTests {
+    @Test(arguments: [
+        ("import XCTest\n", true),
+        ("import Foundation\n@testable import Store\nimport Testing\n", true),
+        ("#if canImport(Testing)\nimport struct Testing.Tag\n#endif\n", true),
+        ("import Foundation\n@testable import Store\n", false),
+        ("import XCTestDynamicOverlay\n// import XCTest\n", false),
+    ])
+    func aFileIsTestCodeWhenItImportsATestFramework(source: String, expected: Bool) {
+        #expect(TestScopeFinder.importsTestFramework(source) == expected)
+    }
+
     @Test func groupsTestDeclarationsByType() {
         let first = """
         import XCTest

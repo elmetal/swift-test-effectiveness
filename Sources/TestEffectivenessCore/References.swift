@@ -108,6 +108,28 @@ enum TestScopeFinder {
         }
     }
 
+    /// The modules whose import marks a file outside the analysed sources as test code.
+    static let testFrameworks = ["XCTest", "Testing"]
+
+    /// Whether `source` imports a test framework: what the index says about a test file
+    /// (`ReferenceColumn.testFrameworkModules`), for when there is no index to ask.
+    static func importsTestFramework(_ source: String) -> Bool {
+        let finder = ImportFinder(viewMode: .sourceAccurate)
+        finder.walk(Parser.parse(source: source))
+        return finder.found
+    }
+
+    private final class ImportFinder: SyntaxVisitor {
+        var found = false
+
+        override func visit(_ node: ImportDeclSyntax) -> SyntaxVisitorContinueKind {
+            if let module = node.path.first?.name.text, TestScopeFinder.testFrameworks.contains(module) {
+                found = true
+            }
+            return .skipChildren
+        }
+    }
+
     /// Groups the test declarations of all test files into scopes.
     static func scopes(files: [(path: String, source: String)]) -> [TestScope] {
         var ranges: [String: [TestScope.Range]] = [:]
@@ -369,7 +391,7 @@ enum ReferenceColumn {
     }
 
     /// Module USRs whose import marks a file as test code.
-    static let testFrameworkModules = ["c:@M@XCTest", "c:@M@Testing"]
+    static let testFrameworkModules = TestScopeFinder.testFrameworks.map { "c:@M@\($0)" }
 
     /// - Parameters:
     ///   - projectRoot: the root the methods' relative paths are resolved against (the build copy).
