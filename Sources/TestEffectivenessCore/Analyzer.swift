@@ -147,6 +147,9 @@ public final class Analyzer: @unchecked Sendable {
     private let log: @Sendable (String) -> Void
     /// Relative paths of the production sources found by the last `plan()`.
     private var productionFiles: [String] = []
+    /// With `--since`: the test files the change touches, relative to the project, found by the
+    /// last `plan()` (see `AnalysisReport.changedTestFiles`).
+    public private(set) var changedTestFiles: [String]?
     /// SwiftPM: the package's name and its test targets, found by the last `plan()`.
     private var package: (name: String, testTargets: [String])?
     /// SwiftPM: set once starting the test bundles directly gave the baseline's results.
@@ -187,6 +190,15 @@ public final class Analyzer: @unchecked Sendable {
         productionFiles = files
         let changed = try configuration.changedSince.map {
             try ChangedLines.load(since: $0, in: configuration.projectPath)
+        }
+        changedTestFiles = changed.map { changed in
+            let project = CoverageMap.normalize(configuration.projectPath.path) + "/"
+            let analyzed = Set(files.map {
+                CoverageMap.normalize(configuration.projectPath.appendingPathComponent($0).path)
+            })
+            return ChangedTests.files(in: changed, analyzed: analyzed).map {
+                $0.hasPrefix(project) ? String($0.dropFirst(project.count)) : $0
+            }
         }
 
         var methods: [DiscoveredMethod] = []
@@ -232,9 +244,15 @@ public final class Analyzer: @unchecked Sendable {
         }
         let mutantCount = nextID - 1
         guard mutantCount > 0 else {
-            return AnalysisReport(
-                projectPath: configuration.projectPath.path, coverageAvailable: false, methods: [], skipped: skipped
+            let report = AnalysisReport(
+                projectPath: configuration.projectPath.path, coverageAvailable: false, methods: [], skipped: skipped,
+                changedTestFiles: changedTestFiles
             )
+            if let tests = Reporter.testChangesNotAnalyzed(report) {
+                log("Warning: \(tests.count) changed test \(tests.count == 1 ? "file" : "files") not analyzed. "
+                    + Reporter.testChangesNotAnalyzedExplanation)
+            }
+            return report
         }
 
         let methodsWithCases = caseAssignments.filter { !$0.isEmpty }
@@ -443,7 +461,8 @@ public final class Analyzer: @unchecked Sendable {
             referencesAvailable: references != nil,
             methods: results,
             skipped: skipped,
-            testsFailingAlone: testsFailingAlone
+            testsFailingAlone: testsFailingAlone,
+            changedTestFiles: changedTestFiles
         )
     }
 

@@ -188,6 +188,149 @@ struct GitDiffTests {
         }
         #expect(!changed.intersects(file: repo.appendingPathComponent("My App/Same.swift").path, lines: 1...1))
     }
+
+    @Test func deletedFilesKeepWhatTheyContained() {
+        let diff = """
+        diff --git a/Tests/GoneTests.swift b/Tests/GoneTests.swift
+        deleted file mode 100644
+        --- a/Tests/GoneTests.swift
+        +++ /dev/null
+        @@ -1,2 +0,0 @@
+        -import XCTest
+        -final class GoneTests: XCTestCase {}
+        \\ No newline at end of file
+        diff --git a/Sources/A.swift b/Sources/A.swift
+        --- a/Sources/A.swift
+        +++ b/Sources/A.swift
+        @@ -2 +1,0 @@
+        -import XCTest
+        """
+        let changed = ChangedLines.parse(diff: diff, root: URL(fileURLWithPath: "/repo"))
+        #expect(changed.deletedFiles == [
+            "/repo/Tests/GoneTests.swift": "import XCTest\nfinal class GoneTests: XCTestCase {}\n",
+        ])
+        #expect(changed.linesByFile == ["/repo/Sources/A.swift": [1, 2]])
+    }
+
+    /// Behind its `-` or `+`, a line of code can look like the header of a file or of a hunk.
+    @Test func linesOfAHunkAreNotHeaders() {
+        let diff = """
+        --- a/Sources/A.swift
+        +++ b/Sources/A.swift
+        @@ -3,2 +3,2 @@
+        --- a/Sources/Old.swift
+        -@@ -1 +50 @@
+        +++ b/Sources/New.swift
+        +@@ -1 +60 @@
+        @@ -9 +9 @@
+        -old
+        +new
+        """
+        let changed = ChangedLines.parse(diff: diff, root: URL(fileURLWithPath: "/repo"))
+        #expect(changed.linesByFile == ["/repo/Sources/A.swift": [3, 4, 9]])
+        #expect(changed.deletedFiles.isEmpty)
+    }
+}
+
+/// `--since` selects declarations of the analysed sources by their changed lines, so a change to
+/// the tests selects nothing; the report has to say that it did not check it.
+struct ChangedTestsTests {
+    static let changedTests = ["Tests/ATests.swift", "Tests/GoneTests.swift", "Tests/NewTests.swift"]
+
+    /// A repository whose tests change after its first commit: one is weakened, one deleted and
+    /// one new, and a file of the tests that is not a test itself changes too.
+    private func withChangedTests(
+        changingSources: Bool = false, since: String? = "HEAD", _ body: (Analyzer, Messages) throws -> Void
+    ) throws {
+        let fileManager = FileManager.default
+        let repo = fileManager.temporaryDirectory.appendingPathComponent("ste-tests-\(UUID().uuidString)")
+        defer { try? fileManager.removeItem(at: repo) }
+        func write(_ path: String, _ source: String) throws {
+            let url = repo.appendingPathComponent(path)
+            try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try source.write(to: url, atomically: true, encoding: .utf8)
+        }
+        func git(_ arguments: String...) throws {
+            let result = try ProcessRunner.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"] + arguments, in: repo
+            )
+            #expect(result.exitCode == 0, "\(result.output)")
+        }
+        try write("Sources/A.swift", "func isPositive(_ x: Int) -> Bool {\n    x > 0\n}\n")
+        try write("Tests/ATests.swift", """
+        import XCTest
+        final class ATests: XCTestCase {
+            func testIsPositive() { XCTAssertTrue(isPositive(makeInput())) }
+        }
+
+        """)
+        try write("Tests/GoneTests.swift", "import Testing\n@Test func gone() { #expect(!isPositive(0)) }\n")
+        try write("Tests/Support.swift", "func makeInput() -> Int { 1 }\n")
+        try git("init", "-q")
+        try git("add", ".")
+        try git("commit", "-q", "-m", "init")
+
+        try write("Tests/ATests.swift", """
+        import XCTest
+        final class ATests: XCTestCase {
+            func testIsPositive() { _ = isPositive(makeInput()) }
+        }
+
+        """)
+        try fileManager.removeItem(at: repo.appendingPathComponent("Tests/GoneTests.swift"))
+        try write("Tests/Support.swift", "func makeInput() -> Int { 2 }\n")
+        try write("Tests/NewTests.swift", "#if canImport(Testing)\nimport Testing\n#endif\n")
+        if changingSources {
+            try write("Sources/A.swift", "func isPositive(_ x: Int) -> Bool {\n    x >= 1\n}\n")
+        }
+
+        let configuration = AnalysisConfiguration(
+            projectPath: repo,
+            buildSystem: .custom(sourceDirectories: ["Sources"], buildCommand: "true", testCommand: "true"),
+            changedSince: since
+        )
+        let messages = Messages()
+        try body(Analyzer(configuration: configuration) { messages.append($0) }, messages)
+    }
+
+    @Test func findsChangedNewAndDeletedTestFiles() throws {
+        try withChangedTests { analyzer, _ in
+            let methods = try analyzer.plan().methods
+            #expect(methods.isEmpty)
+            #expect(analyzer.changedTestFiles == Self.changedTests)
+        }
+    }
+
+    @Test func aChangeToTheTestsAloneIsReportedAsNotAnalyzed() throws {
+        try withChangedTests { analyzer, messages in
+            let report = try analyzer.run()
+            #expect(report.methods.isEmpty)
+            #expect(report.changedTestFiles == Self.changedTests)
+            #expect(messages.all.contains { $0.hasPrefix("Warning: 3 changed test files not analyzed.") })
+            let text = try Reporter.render(report, format: .text)
+            #expect(text.contains("\(Reporter.testChangesNotAnalyzedTitle) (3)"))
+            for file in Self.changedTests { #expect(text.contains("  \(file)\n")) }
+            #expect(!text.contains("Support.swift"))
+        }
+    }
+
+    /// The methods that changed are analysed; the files are recorded, and nothing is planned for
+    /// them.
+    @Test func changedSourcesAreStillSelected() throws {
+        try withChangedTests(changingSources: true) { analyzer, _ in
+            let methods = try analyzer.plan().methods
+            #expect(methods.map(\.info.name) == ["isPositive(_:)"])
+            #expect(analyzer.changedTestFiles == Self.changedTests)
+        }
+    }
+
+    @Test func withoutARevisionNoTestFilesAreRecorded() throws {
+        try withChangedTests(since: nil) { analyzer, _ in
+            let methods = try analyzer.plan().methods
+            #expect(!methods.isEmpty)
+            #expect(analyzer.changedTestFiles == nil)
+        }
+    }
 }
 
 struct ReporterTests {
@@ -446,6 +589,42 @@ struct ReporterTests {
             let rendered = try Reporter.render(withTestsFailingAlone(tests), format: format)
             #expect(!rendered.contains(Reporter.testsFailingAloneTitle))
         }
+    }
+
+    @Test(arguments: [ReportFormat.text, .markdown])
+    func warnsAboutChangedTestsWhenNothingWasMutated(_ format: ReportFormat) throws {
+        var empty = AnalysisReport(projectPath: "/p", coverageAvailable: false, methods: [], skipped: [])
+        empty.changedTestFiles = ["Tests/ATests.swift"]
+        let rendered = try Reporter.render(empty, format: format)
+        #expect(rendered.contains(Reporter.testChangesNotAnalyzedTitle))
+        #expect(rendered.contains(Reporter.testChangesNotAnalyzedExplanation))
+        #expect(rendered.contains("Tests/ATests.swift"))
+
+        // Methods were mutated: the report is about them.
+        var analyzed = report
+        analyzed.changedTestFiles = ["Tests/ATests.swift"]
+        let aboutMethods = try Reporter.render(analyzed, format: format)
+        #expect(!aboutMethods.contains(Reporter.testChangesNotAnalyzedTitle))
+
+        // No test changed, or no `--since`.
+        for files in [[], nil] as [[String]?] {
+            empty.changedTestFiles = files
+            let rendered = try Reporter.render(empty, format: format)
+            #expect(!rendered.contains(Reporter.testChangesNotAnalyzedTitle))
+        }
+    }
+
+    @Test func jsonCarriesChangedTestFiles() throws {
+        var analyzed = report
+        analyzed.changedTestFiles = ["Tests/ATests.swift"]
+        let json = try Reporter.render(analyzed, format: .json)
+        #expect(json.contains("\"changedTestFiles\" : ["))
+        #expect(try JSONDecoder().decode(AnalysisReport.self, from: Data(json.utf8)).changedTestFiles == ["Tests/ATests.swift"])
+
+        // Without `--since` the field is absent, and reports without it still decode.
+        let whole = try Reporter.render(report, format: .json)
+        #expect(!whole.contains("changedTestFiles"))
+        #expect(try JSONDecoder().decode(AnalysisReport.self, from: Data(whole.utf8)).changedTestFiles == nil)
     }
 
     @Test func jsonCarriesTestsFailingAlone() throws {

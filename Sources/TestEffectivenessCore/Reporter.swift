@@ -164,6 +164,10 @@ public enum Reporter {
                 out += "  \(test.test)  (\(test.timedOut ? "timed out; " : "")log: \(test.log))\n"
             }
         }
+        if let files = testChangesNotAnalyzed(report) {
+            out += "\n\(testChangesNotAnalyzedTitle) (\(files.count))\n  \(testChangesNotAnalyzedExplanation)\n\n"
+            for file in files { out += "  \(file)\n" }
+        }
         if !report.skipped.isEmpty {
             out += "\nNot analyzed (\(report.skipped.count))\n"
             for skipped in report.skipped {
@@ -219,6 +223,10 @@ public enum Reporter {
                 out += "- `\(test.test)`\(test.timedOut ? " (timed out)" : "") — log: `\(test.log)`\n"
             }
         }
+        if let files = testChangesNotAnalyzed(report) {
+            out += "\n## \(testChangesNotAnalyzedTitle)\n\n\(testChangesNotAnalyzedExplanation)\n\n"
+            for file in files { out += "- `\(file)`\n" }
+        }
         if !report.skipped.isEmpty {
             out += "\n<details><summary>Not analyzed (\(report.skipped.count))</summary>\n\n"
             for skipped in report.skipped {
@@ -238,6 +246,21 @@ public enum Reporter {
         "These test scopes pass in the whole suite but fail when run on their own, without mutations: "
         + "they depend on tests that run before them, or share state with them. "
         + "Make each test set up what it needs. They were not used to select tests for mutants."
+
+    static let testChangesNotAnalyzedTitle = "Test changes not analyzed"
+
+    public static let testChangesNotAnalyzedExplanation =
+        "The change touches test files, but `--since` selects declarations by their own changed lines "
+        + "and found none to mutate. Whether the methods those tests cover are still tested was not checked. "
+        + "Run without `--since` to check."
+
+    /// The changed test files to warn about: nothing was mutated, so without the warning the
+    /// report would read as if the change left nothing to check. (When methods were mutated, the
+    /// report is about them, and `changedTestFiles` only records the files.)
+    public static func testChangesNotAnalyzed(_ report: AnalysisReport) -> [String]? {
+        guard report.methods.isEmpty, let files = report.changedTestFiles, !files.isEmpty else { return nil }
+        return files
+    }
 
     /// For executed methods whose mutants survived: is any test about this method at all?
     static func referenceNote(_ result: MethodResult) -> String? {

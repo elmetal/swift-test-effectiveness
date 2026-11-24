@@ -342,10 +342,15 @@ public struct AnalysisReport: Codable, Sendable {
     /// Test scopes that fail when run on their own without mutations. `nil` when the check did not
     /// run (it runs only with test selection).
     public var testsFailingAlone: [TestFailingAlone]?
+    /// With `--since`: the test files the change touches, relative to the project, those it
+    /// deleted among them. A change to a test selects no declaration, so the methods it tests are
+    /// analysed only when their own lines changed too. `nil` without `--since`.
+    public var changedTestFiles: [String]?
 
     public init(
         projectPath: String, coverageAvailable: Bool, referencesAvailable: Bool = false,
-        methods: [MethodResult], skipped: [SkippedMethod], testsFailingAlone: [TestFailingAlone]? = nil
+        methods: [MethodResult], skipped: [SkippedMethod], testsFailingAlone: [TestFailingAlone]? = nil,
+        changedTestFiles: [String]? = nil
     ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.toolVersion = ToolVersion.current
@@ -355,6 +360,7 @@ public struct AnalysisReport: Codable, Sendable {
         self.methods = methods
         self.skipped = skipped
         self.testsFailingAlone = testsFailingAlone
+        self.changedTestFiles = changedTestFiles
     }
 
     public func methods(_ classification: MethodClassification) -> [MethodResult] {

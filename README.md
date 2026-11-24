@@ -48,6 +48,8 @@ A test that injects a mock does not count as a reference to the real implementat
 
 Apart from the declarations, the report has a section about the tests themselves. *Tests that fail alone* lists test scopes that pass in the whole suite but fail when run on their own, without mutations: they depend on tests that run before them, or share state with them. Tests should not depend on each other; make each one set up what it needs. The check runs with [test selection](#test-selection).
 
+*Test changes not analyzed* appears with `--since` when the change touches test files and no declaration was mutated. `--since` selects declarations by their own changed lines, so a change to the tests alone selects nothing, although it can stop the tests from detecting what they detected before (an assertion removed, a test deleted). The section lists the test files; run without `--since` to check the methods they cover. The exit status is not affected.
+
 ## Requirements
 
 - macOS 26 or later
@@ -85,7 +87,7 @@ The project is copied to `<package>/.build/test-effectiveness` and analysed ther
 
 | Option | Description |
 |---|---|
-| `--since <rev>` | Only analyse declarations that overlap lines changed since `<rev>`, including lines deleted from them and new untracked files (for pull requests) |
+| `--since <rev>` | Only analyse declarations that overlap lines changed since `<rev>`, including lines deleted from them and new untracked files (for pull requests). A change to the tests selects no declaration: see [*Test changes not analyzed*](#reading-the-report) |
 | `--target <name>` | Only analyse this target (repeatable) |
 | `--test-filter <pattern>` | Passed to `swift test --filter` |
 | `--exclude <substring>` | Skip files whose path contains this string (repeatable) |
@@ -122,7 +124,7 @@ Options for a specific method:
 
 Exit status: `0` success, `1` pseudo-tested methods found with `--fail-on-pseudo-tested`, `2` analysis error (build failure, failing baseline, …), `128 + signal` when interrupted (`130` for Ctrl-C). On interruption the running build or test command is stopped as well.
 
-The JSON report starts with `schemaVersion` and `toolVersion`. `schemaVersion` is incremented when a field is removed, renamed or changes meaning; new fields may be added without changing it, so ignore keys you do not know. `testsFailingAlone` lists the [tests that fail alone](#reading-the-report) (`test`, `timedOut`, `log`); it is absent when the check did not run. With `--case-mutants`, a method whose cases were run has `cases` (`label`, `line`, `executed`, `mutants` for each case with mutants). With `--closure`, the `kind` of a closure is `closure`. With `--return-mutants`, the `mutation` of a mutant can be `resultOnly`.
+The JSON report starts with `schemaVersion` and `toolVersion`. `schemaVersion` is incremented when a field is removed, renamed or changes meaning; new fields may be added without changing it, so ignore keys you do not know. `testsFailingAlone` lists the [tests that fail alone](#reading-the-report) (`test`, `timedOut`, `log`); it is absent when the check did not run. With `--since`, `changedTestFiles` lists the test files the change touches (paths relative to the project, deleted files among them), whether or not declarations were mutated; it is absent without `--since`. With `--case-mutants`, a method whose cases were run has `cases` (`label`, `line`, `executed`, `mutants` for each case with mutants). With `--closure`, the `kind` of a closure is `closure`. With `--return-mutants`, the `mutation` of a mutant can be `resultOnly`.
 
 ### Xcode and other projects (custom mode)
 
@@ -243,10 +245,11 @@ Each of these holds only while the toolchain is the same; the package descriptio
 swift-test-effectiveness . --since origin/main --format markdown -o effectiveness.md
 ```
 
-Posting the generated Markdown as a PR comment shows, for the changed declarations only, what the tests are missing and how to fix it.
+Posting the generated Markdown as a PR comment shows, for the changed declarations only, what the tests are missing and how to fix it. A pull request that changes only tests gets no findings, and the report says so under [*Test changes not analyzed*](#reading-the-report).
 
 ### Known limitations
 
+- `--since` selects declarations by their own changed lines. The methods that a changed test covers are analysed only when their lines changed too, so a change that weakens the tests of unchanged methods is not found. When nothing was mutated, the report lists the changed test files under [*Test changes not analyzed*](#reading-the-report); when other declarations were mutated, only `changedTestFiles` in the JSON report records them.
 - The project is analysed in a copy, so local path dependencies (`.package(path: "../Foo")`) do not resolve.
 - `swift test` locks `.build`, so runs that go through it cannot overlap. For Swift packages, [`--jobs`](#parallel-runs) therefore needs the test bundles to be started directly, which `--test-filter` rules out.
 - Test selection runs each test scope alone without mutations and never selects a scope that fails on its own (see [Test selection](#test-selection)), so a test that depends on other tests running first does not make a mutant look detected. Scopes that pass alone but fail only in a particular combination with other selected scopes are not detected; use `--no-test-selection` if you suspect such a suite.
